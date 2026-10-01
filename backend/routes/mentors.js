@@ -25,9 +25,10 @@ router.get("/:id/slots", async (req, res) => {
   const days = Math.min(Number(req.query.days) || 7, 30);
 
   try {
-    const mentor = await pool.query("SELECT id, name, title, color FROM mentors WHERE id = $1", [
-      mentorId,
-    ]);
+    const mentor = await pool.query(
+      "SELECT id, name, title, color, field_id FROM mentors WHERE id = $1",
+      [mentorId]
+    );
     if (mentor.rows.length === 0) {
       return res.status(404).json({ error: "Mentor not found." });
     }

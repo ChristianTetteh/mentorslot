@@ -220,6 +220,12 @@ a { color: var(--forest); }
   margin-top: auto;
 }
 
+.field-card-count {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  margin: 0 0 var(--sp-3);
+}
+
 /* ---------- Mentor slot picker ---------- */
 
 .back-link {

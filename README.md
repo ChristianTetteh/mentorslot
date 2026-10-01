@@ -16,6 +16,10 @@ task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a 
   never be booked twice, even under concurrent requests (see [Preventing double-booking](#preventing-double-booking))
 
 **Beyond the brief**
+- **Browse by field** — 10 career fields (Tech & IT, Healthcare & Medicine, Law & Legal,
+  Engineering & Construction, and more), 22 mentors total, so the app reads like a real
+  multi-industry mentorship platform instead of one flat list. All mentor profiles are
+  fictional demo data, not real people.
 - **No account needed** — booking only asks for a name and email; "my bookings" are looked
   up by email, no login/password anywhere
 - **Cancel + rebook** — cancelling a booking frees the slot so someone else (or the same
@@ -119,7 +123,9 @@ guard in [Preventing double-booking](#preventing-double-booking), not a mocked s
 
 | Method | Route | Description |
 |--------|-------|-------------|
-| GET    | `/api/mentors` | List mentors |
+| GET    | `/api/fields` | List fields with a mentor count for each |
+| GET    | `/api/fields/:id/mentors` | A field + its mentors |
+| GET    | `/api/mentors` | List all mentors (flat, across every field) |
 | GET    | `/api/mentors/:id/slots?days=` | A mentor + their available future slots |
 | POST   | `/api/bookings` | Book a slot `{ slot_id, name, email }` — `409` if already taken |
 | GET    | `/api/bookings?email=` | List bookings for an email address |

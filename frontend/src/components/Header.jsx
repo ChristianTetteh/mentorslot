@@ -19,8 +19,11 @@ export default function Header() {
         MentorSlot
       </Link>
       <nav className="site-nav">
-        <Link to="/" className={location.pathname === "/" ? "is-active" : ""}>
-          Find a mentor
+        <Link
+          to="/"
+          className={location.pathname === "/" || location.pathname.startsWith("/fields") ? "is-active" : ""}
+        >
+          Browse fields
         </Link>
         <Link to="/my-bookings" className={location.pathname === "/my-bookings" ? "is-active" : ""}>
           My bookings

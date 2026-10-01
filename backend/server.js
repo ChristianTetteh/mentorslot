@@ -4,6 +4,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
+const fieldsRoutes = require("./routes/fields");
 const mentorsRoutes = require("./routes/mentors");
 const bookingsRoutes = require("./routes/bookings");
 
@@ -27,6 +28,7 @@ app.use("/api/bookings", (req, res, next) => {
 });
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
+app.use("/api/fields", fieldsRoutes);
 app.use("/api/mentors", mentorsRoutes);
 app.use("/api/bookings", bookingsRoutes);
 

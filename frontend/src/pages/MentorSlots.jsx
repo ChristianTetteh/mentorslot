@@ -91,7 +91,7 @@ export default function MentorSlots() {
 
   return (
     <div className="page">
-      <Link to="/" className="back-link">← All mentors</Link>
+      <Link to={`/fields/${mentor.field_id}`} className="back-link">← Back to mentors</Link>
 
       <section className="mentor-header" style={{ "--mentor-color": mentor.color }}>
         <h1>{mentor.name}</h1>

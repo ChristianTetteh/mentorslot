@@ -1,13 +1,32 @@
 -- MentorSlot schema. Safe to re-run (idempotent).
 
+-- A field is a broad profession/career category (Tech & IT, Healthcare, Law, ...).
+-- Mentors belong to exactly one field; the homepage browses fields first, then
+-- the mentors within one, rather than one flat list of every mentor.
+CREATE TABLE IF NOT EXISTS fields (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  slug TEXT NOT NULL UNIQUE,
+  color TEXT NOT NULL DEFAULT '#2F5233',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS mentors (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
   title TEXT NOT NULL,
   bio TEXT NOT NULL,
   color TEXT NOT NULL DEFAULT '#6C63FF',
+  field_id INTEGER REFERENCES fields(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Added after the first release, so existing deployments need the column
+-- added explicitly rather than relying on CREATE TABLE IF NOT EXISTS above.
+ALTER TABLE mentors ADD COLUMN IF NOT EXISTS field_id INTEGER REFERENCES fields(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_mentors_field ON mentors (field_id);
+-- Lets seed.js upsert mentors by name instead of duplicating them on every boot.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mentors_name ON mentors (name);
 
 -- Each row is one bookable time slot for one mentor. `status` is the fast
 -- path for "is this slot open" (used for the atomic booking update below);
