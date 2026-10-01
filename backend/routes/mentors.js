@@ -67,10 +67,10 @@ router.get("/:id/slots", async (req, res) => {
     const durationMs = duration * 60 * 1000;
     const slots = [];
     for (const day of businessDays(now, days)) {
-      for (const { start, boundary } of gridStartsForDay(day)) {
+      for (const { start, boundary } of gridStartsForDay(day, duration)) {
         if (start <= now) continue;
         const end = new Date(start.getTime() + durationMs);
-        if (end > boundary) continue; // would cross the lunch break or run past closing
+        if (end > boundary) continue; // defensive — gridStartsForDay already keeps candidates within the block
         const startMs = start.getTime();
         const endMs = end.getTime();
         const overlaps = booked.some(([bStart, bEnd]) => startMs < bEnd && endMs > bStart);

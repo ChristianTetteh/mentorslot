@@ -87,7 +87,11 @@ plain `INSERT INTO bookings (...)` either succeeds or raises error code `23P01`
 Available slots are also computed *live* on each request (business-hours grid minus that
 mentor's existing bookings for the requested duration) rather than read off a pre-generated
 table, since a fixed-granularity slot table can't cleanly represent 30/45/60-minute
-availability at once — see `backend/lib/schedule.js` and `backend/routes/mentors.js`. That
+availability at once — see `backend/lib/schedule.js` and `backend/routes/mentors.js`. The
+grid itself is spaced by the requested duration plus a 15-minute buffer (not a flat
+half-hour grid independent of duration), so a 45-minute candidate at 9:00-9:45 is followed
+by one at 10:00-10:45, not an overlapping 9:30-10:15 — every mentor gets a breather between
+sessions, and the list never shows two candidates that couldn't both be booked anyway. That
 read path is a convenience for not offering slots that would obviously conflict; the actual
 guarantee against bad data ever landing in the table is the `EXCLUDE` constraint above.
 
