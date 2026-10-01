@@ -58,6 +58,12 @@ const MENTORS = [
     title: "Retail General Manager",
     bio: "15 years managing retail operations and people. Can help with leadership basics, performance reviews, and moving from individual contributor to manager.",
   },
+  {
+    field: "business-management",
+    name: "Nii Armah Clottey",
+    title: "HR Manager",
+    bio: "Talent acquisition and people ops at a mid-size company. Can talk HR career paths, running fair hiring processes, and building a people function from scratch.",
+  },
 
   // Finance & Accounting
   {
@@ -71,6 +77,12 @@ const MENTORS = [
     name: "Kwabena Frimpong",
     title: "Investment Analyst",
     bio: "Equity research at an asset management firm. Can talk financial modeling, how to read a balance sheet, or prepping for finance interviews.",
+  },
+  {
+    field: "finance-accounting",
+    name: "Efua Boateng-Mensah",
+    title: "Financial Controller",
+    bio: "Oversees reporting and budgeting for a manufacturing company. Good for management accounting basics and moving from accountant to finance lead.",
   },
 
   // Creative & Design
@@ -86,6 +98,18 @@ const MENTORS = [
     title: "Illustrator & Motion Designer",
     bio: "Illustration and short-form animation for brands. Happy to talk tools, style development, and landing freelance clients.",
   },
+  {
+    field: "creative-design",
+    name: "Nana Ama Serwaa",
+    title: "Fashion Designer",
+    bio: "Runs an independent clothing label. Happy to talk building a creative brand, sourcing production, and selling direct-to-consumer.",
+  },
+  {
+    field: "creative-design",
+    name: "Kwabena Asare",
+    title: "Photographer",
+    bio: "Commercial and portrait photography. Can help with building a portfolio, pricing shoots, and going full-time freelance.",
+  },
 
   // Marketing & Communications
   {
@@ -99,6 +123,12 @@ const MENTORS = [
     name: "Kwesi Mensah-Bonsu",
     title: "PR & Communications Specialist",
     bio: "Media relations and corporate comms. Good for writing press releases, crisis comms basics, and breaking into PR.",
+  },
+  {
+    field: "marketing-communications",
+    name: "Abena Dufie Appiah",
+    title: "Social Media Strategist",
+    bio: "Builds organic content strategy for consumer brands. Can talk content planning, growing an audience, and breaking into social media roles.",
   },
 
   // Law & Legal
@@ -128,6 +158,18 @@ const MENTORS = [
     title: "Registered Nurse",
     bio: "ICU nurse with 8 years' experience. Good for nursing school questions, clinical career paths, and avoiding burnout in healthcare.",
   },
+  {
+    field: "healthcare-medicine",
+    name: "Dr. Kwaku Agyemang",
+    title: "Pharmacist",
+    bio: "Community pharmacy practice. Good for pharmacy school questions and clinical vs. retail pharmacy career paths.",
+  },
+  {
+    field: "healthcare-medicine",
+    name: "Afia Nkrumah",
+    title: "Physiotherapist",
+    bio: "Sports injury rehab. Can talk physiotherapy training routes and what it's like working with athletes day to day.",
+  },
 
   // Engineering & Construction
   {
@@ -141,6 +183,12 @@ const MENTORS = [
     name: "Yaw Oppong",
     title: "Electrical Engineer",
     bio: "Power systems design. Happy to talk electrical engineering career paths and moving between design work and site work.",
+  },
+  {
+    field: "engineering-construction",
+    name: "Yaw Antwi-Boasiako",
+    title: "Mechanical Engineer",
+    bio: "Manufacturing and plant engineering. Happy to talk mechanical engineering fundamentals and moving between design and plant-floor roles.",
   },
 
   // Environment & Agriculture
@@ -156,6 +204,12 @@ const MENTORS = [
     title: "Environmental Scientist",
     bio: "Environmental impact assessments and conservation policy. Good for sustainability career paths and breaking into environmental work.",
   },
+  {
+    field: "environment-agriculture",
+    name: "Kojo Asiedu-Mensah",
+    title: "Sustainability Consultant",
+    bio: "Advises companies on ESG and carbon reporting. Can talk sustainability career paths and breaking in without a science background.",
+  },
 
   // Entrepreneurship & Startups
   {
@@ -170,13 +224,19 @@ const MENTORS = [
     title: "Startup Operator",
     bio: "Among the first 10 hires at two startups. Good for how to evaluate a startup job offer and what early-stage work actually looks like.",
   },
+  {
+    field: "entrepreneurship-startups",
+    name: "Abena Asamoah",
+    title: "Growth Marketer & Co-founder",
+    bio: "Co-founded a direct-to-consumer brand. Can talk early customer acquisition, bootstrapping, and juggling multiple hats as an early founder.",
+  },
 ];
 
 const SLOT_START_HOUR = 9; // 09:00
 const MORNING_END_HOUR = 12; // slots stop at 12:00, resume at 13:00
 const SLOT_END_HOUR = 17; // 17:00
 const SLOT_MINUTES = 30;
-const DAYS_AHEAD = 7; // generate slots for the next 7 calendar days
+const DAYS_AHEAD = 14; // generate slots for the next 14 calendar days (~10 weekdays)
 const WEEKDAYS_ONLY = true;
 
 function isWeekday(date) {

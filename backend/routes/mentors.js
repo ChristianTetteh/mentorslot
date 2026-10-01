@@ -22,7 +22,7 @@ router.get("/:id/slots", async (req, res) => {
   if (!Number.isInteger(mentorId) || mentorId <= 0) {
     return res.status(400).json({ error: "Invalid mentor id." });
   }
-  const days = Math.min(Number(req.query.days) || 7, 30);
+  const days = Math.min(Number(req.query.days) || 14, 30);
 
   try {
     const mentor = await pool.query(
@@ -33,13 +33,18 @@ router.get("/:id/slots", async (req, res) => {
       return res.status(404).json({ error: "Mentor not found." });
     }
 
+    // The cutoff is the END of day `days` from today (not "now() + N*24h"),
+    // so a full calendar day of slots is always visible regardless of what
+    // time it currently is — otherwise a request made late in the day could
+    // silently cut off the morning slots of the Nth day, making the booking
+    // window look shorter than it actually is.
     const slots = await pool.query(
       `SELECT id, start_time, end_time
        FROM slots
        WHERE mentor_id = $1
          AND status = 'available'
          AND start_time > now()
-         AND start_time < now() + ($2 || ' days')::interval
+         AND start_time < (CURRENT_DATE + (($2::int + 1) || ' days')::interval)
        ORDER BY start_time ASC`,
       [mentorId, days]
     );

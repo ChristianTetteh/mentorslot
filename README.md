@@ -17,7 +17,7 @@ task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a 
 
 **Beyond the brief**
 - **Browse by field** — 10 career fields (Tech & IT, Healthcare & Medicine, Law & Legal,
-  Engineering & Construction, and more), 22 mentors total, so the app reads like a real
+  Engineering & Construction, and more), 32 mentors total, so the app reads like a real
   multi-industry mentorship platform instead of one flat list. All mentor profiles are
   fictional demo data, not real people.
 - **No account needed** — booking only asks for a name and email; "my bookings" are looked
@@ -30,7 +30,11 @@ task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a 
 - **Rate limiting + security headers** — Helmet, and a dedicated rate limit on the booking
   endpoint to blunt scripted slot-grabbing
 - **Self-seeding demo data** — every boot re-runs an idempotent seed script, so the live
-  demo always has fresh future slots across the next 7 weekdays without manual upkeep
+  demo always has fresh future slots across the next two weeks without manual upkeep
+- **Full calendar days of lead time, not a sliding window** — available slots are computed
+  against the end of day N, not `now() + N*24h`, so a request made late in the day can't
+  silently clip the last visible day's morning slots (an easy mistake with the obvious
+  implementation, and one this app had briefly)
 - **Distinct visual identity** — an "appointment ledger" design (ledger rows, day tabs, a
   wax-stamp confirmation) rather than a generic form-and-card template
 - **Mobile-tested** — checked for horizontal overflow at 320/360/375/390px before shipping
