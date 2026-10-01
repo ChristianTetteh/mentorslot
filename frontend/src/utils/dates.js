@@ -22,6 +22,22 @@ export function fullDateTimeLabel(dateStr) {
   }) + " at " + timeLabel(dateStr);
 }
 
+// "9:00 AM – 9:45 AM" — sessions now run 30/45/60 minutes, so anywhere a
+// single start time used to be shown, the full range is clearer.
+export function timeRangeLabel(startStr, endStr) {
+  return `${timeLabel(startStr)} – ${timeLabel(endStr)}`;
+}
+
+// "Thursday, 2 October at 9:00 AM – 9:45 AM"
+export function fullDateTimeRangeLabel(startStr, endStr) {
+  const d = new Date(startStr);
+  return (
+    d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" }) +
+    " at " +
+    timeRangeLabel(startStr, endStr)
+  );
+}
+
 // Groups a flat list of slots (each with start_time) into an array of
 // { key, label, slots } ordered by day, preserving slot order within a day.
 export function groupSlotsByDay(slots) {

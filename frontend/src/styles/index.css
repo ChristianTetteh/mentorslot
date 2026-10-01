@@ -273,6 +273,33 @@ a { color: var(--forest); }
   font-weight: 600;
 }
 
+.duration-picker {
+  display: flex;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-5);
+}
+
+.duration-pill {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 7px 18px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.duration-pill:hover:not(:disabled) { border-color: var(--muted); color: var(--ink); }
+.duration-pill.is-active {
+  background: var(--mustard-deep);
+  border-color: var(--mustard-deep);
+  color: #FBF7EE;
+}
+.duration-pill:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .ledger {
   list-style: none;
   margin: 0 0 var(--sp-6);
@@ -463,6 +490,7 @@ a { color: var(--forest); }
 }
 
 .booking-row-mentor { font-weight: 600; margin: 0; }
+.booking-row-duration { color: var(--muted); font-weight: 400; font-size: var(--fs-sm); }
 .booking-row-when { color: var(--muted); font-size: var(--fs-sm); margin: 2px 0 0; }
 
 /* ---------- Mobile ---------- */

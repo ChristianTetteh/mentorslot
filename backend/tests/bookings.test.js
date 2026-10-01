@@ -6,93 +6,81 @@ const request = require("supertest");
 const pool = require("../db");
 const app = require("../server");
 
-function makeClient(queryImpl) {
-  return { query: jest.fn(queryImpl), release: jest.fn() };
-}
-
 beforeEach(() => {
   pool.query.mockReset();
   pool.connect.mockReset();
 });
 
+const futureStart = () => new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
 describe("POST /api/bookings", () => {
   it("rejects invalid input before touching the database", async () => {
     const res = await request(app)
       .post("/api/bookings")
-      .send({ slot_id: "not-a-number", name: "Ama", email: "a@b.com" });
+      .send({ mentor_id: "not-a-number", start_time: futureStart(), duration: 30, name: "Ama", email: "a@b.com" });
     expect(res.status).toBe(400);
-    expect(pool.connect).not.toHaveBeenCalled();
+    expect(pool.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a duration the mentor doesn't support without inserting", async () => {
+    pool.query.mockResolvedValueOnce({
+      rows: [{ id: 1, name: "Ama Boateng", title: "PM", allowed_durations: [30] }],
+    });
+
+    const res = await request(app)
+      .post("/api/bookings")
+      .send({ mentor_id: 1, start_time: futureStart(), duration: 60, name: "Kwesi Mensah", email: "kwesi@example.com" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/60-minute/);
+    expect(pool.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("404s when the mentor doesn't exist", async () => {
+    pool.query.mockResolvedValueOnce({ rows: [] });
+
+    const res = await request(app)
+      .post("/api/bookings")
+      .send({ mentor_id: 99, start_time: futureStart(), duration: 30, name: "Kwesi Mensah", email: "kwesi@example.com" });
+
+    expect(res.status).toBe(404);
   });
 
   it("books an available slot", async () => {
-    const client = makeClient((sql) => {
-      if (sql.startsWith("BEGIN")) return Promise.resolve();
-      if (sql.startsWith("UPDATE slots")) {
-        return Promise.resolve({
-          rowCount: 1,
-          rows: [{ mentor_id: 1, start_time: "2026-10-01T09:00:00Z", end_time: "2026-10-01T09:30:00Z" }],
-        });
-      }
-      if (sql.startsWith("INSERT INTO bookings")) {
-        return Promise.resolve({ rows: [{ id: 5, created_at: "2026-09-30T00:00:00Z" }] });
-      }
-      if (sql.startsWith("SELECT name, title")) {
-        return Promise.resolve({ rows: [{ name: "Ama Boateng", title: "PM" }] });
-      }
-      if (sql.startsWith("COMMIT")) return Promise.resolve();
-      return Promise.resolve({ rows: [] });
-    });
-    pool.connect.mockResolvedValueOnce(client);
+    pool.query
+      .mockResolvedValueOnce({ rows: [{ id: 1, name: "Ama Boateng", title: "PM", allowed_durations: [30, 45, 60] }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 5,
+            start_time: "2026-10-02T09:00:00Z",
+            end_time: "2026-10-02T09:30:00Z",
+            duration_minutes: 30,
+            created_at: "2026-09-30T00:00:00Z",
+          },
+        ],
+      });
 
     const res = await request(app)
       .post("/api/bookings")
-      .send({ slot_id: 10, name: "Kwesi Mensah", email: "kwesi@example.com" });
+      .send({ mentor_id: 1, start_time: "2026-10-02T09:00:00Z", duration: 30, name: "Kwesi Mensah", email: "kwesi@example.com" });
 
     expect(res.status).toBe(201);
     expect(res.body.booking.mentor_name).toBe("Ama Boateng");
-    expect(client.query).toHaveBeenCalledWith("COMMIT");
-    expect(client.release).toHaveBeenCalled();
+    expect(res.body.booking.duration_minutes).toBe(30);
   });
 
-  it("rejects with 409 when the slot is already booked (the double-booking guard)", async () => {
-    const client = makeClient((sql) => {
-      if (sql.startsWith("BEGIN")) return Promise.resolve();
-      if (sql.startsWith("UPDATE slots")) return Promise.resolve({ rowCount: 0, rows: [] });
-      if (sql.startsWith("ROLLBACK")) return Promise.resolve();
-      return Promise.resolve({ rows: [] });
+  it("rejects with 409 when the time range overlaps an existing booking (exclusion-constraint guard)", async () => {
+    pool.query.mockResolvedValueOnce({
+      rows: [{ id: 1, name: "Ama Boateng", title: "PM", allowed_durations: [30, 45, 60] }],
     });
-    pool.connect.mockResolvedValueOnce(client);
+    const err = new Error("conflicting key value violates exclusion constraint");
+    err.code = "23P01";
+    pool.query.mockRejectedValueOnce(err);
 
     const res = await request(app)
       .post("/api/bookings")
-      .send({ slot_id: 10, name: "Kwesi Mensah", email: "kwesi@example.com" });
-
-    expect(res.status).toBe(409);
-    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
-  });
-
-  it("rejects with 409 on a unique-constraint violation as a second line of defense", async () => {
-    const client = makeClient((sql) => {
-      if (sql.startsWith("BEGIN")) return Promise.resolve();
-      if (sql.startsWith("UPDATE slots")) {
-        return Promise.resolve({
-          rowCount: 1,
-          rows: [{ mentor_id: 1, start_time: "2026-10-01T09:00:00Z", end_time: "2026-10-01T09:30:00Z" }],
-        });
-      }
-      if (sql.startsWith("INSERT INTO bookings")) {
-        const err = new Error("duplicate key value violates unique constraint");
-        err.code = "23505";
-        return Promise.reject(err);
-      }
-      if (sql.startsWith("ROLLBACK")) return Promise.resolve();
-      return Promise.resolve({ rows: [] });
-    });
-    pool.connect.mockResolvedValueOnce(client);
-
-    const res = await request(app)
-      .post("/api/bookings")
-      .send({ slot_id: 10, name: "Kwesi Mensah", email: "kwesi@example.com" });
+      .send({ mentor_id: 1, start_time: "2026-10-02T09:00:00Z", duration: 60, name: "Kwesi Mensah", email: "kwesi@example.com" });
 
     expect(res.status).toBe(409);
   });
@@ -106,7 +94,7 @@ describe("GET /api/bookings", () => {
 
   it("returns bookings for the given email", async () => {
     pool.query.mockResolvedValueOnce({
-      rows: [{ id: 1, mentee_email: "kwesi@example.com", mentor_name: "Ama Boateng" }],
+      rows: [{ id: 1, mentee_email: "kwesi@example.com", mentor_name: "Ama Boateng", duration_minutes: 30 }],
     });
     const res = await request(app).get("/api/bookings?email=kwesi@example.com");
     expect(res.status).toBe(200);
@@ -116,45 +104,23 @@ describe("GET /api/bookings", () => {
 
 describe("DELETE /api/bookings/:id", () => {
   it("404s when the booking doesn't exist", async () => {
-    const client = makeClient((sql) => {
-      if (sql.startsWith("BEGIN")) return Promise.resolve();
-      if (sql.startsWith("SELECT slot_id")) return Promise.resolve({ rows: [] });
-      if (sql.startsWith("ROLLBACK")) return Promise.resolve();
-      return Promise.resolve({ rows: [] });
-    });
-    pool.connect.mockResolvedValueOnce(client);
+    pool.query.mockResolvedValueOnce({ rows: [] });
 
     const res = await request(app).delete("/api/bookings/99").send({ email: "a@b.com" });
     expect(res.status).toBe(404);
   });
 
   it("rejects cancelling someone else's booking", async () => {
-    const client = makeClient((sql) => {
-      if (sql.startsWith("BEGIN")) return Promise.resolve();
-      if (sql.startsWith("SELECT slot_id")) {
-        return Promise.resolve({ rows: [{ slot_id: 10, mentee_email: "other@example.com" }] });
-      }
-      if (sql.startsWith("ROLLBACK")) return Promise.resolve();
-      return Promise.resolve({ rows: [] });
-    });
-    pool.connect.mockResolvedValueOnce(client);
+    pool.query.mockResolvedValueOnce({ rows: [{ mentee_email: "other@example.com" }] });
 
     const res = await request(app).delete("/api/bookings/1").send({ email: "kwesi@example.com" });
     expect(res.status).toBe(403);
   });
 
-  it("cancels the booking and frees the slot", async () => {
-    const client = makeClient((sql) => {
-      if (sql.startsWith("BEGIN")) return Promise.resolve();
-      if (sql.startsWith("SELECT slot_id")) {
-        return Promise.resolve({ rows: [{ slot_id: 10, mentee_email: "kwesi@example.com" }] });
-      }
-      if (sql.startsWith("DELETE FROM bookings")) return Promise.resolve({ rowCount: 1 });
-      if (sql.startsWith("UPDATE slots")) return Promise.resolve({ rowCount: 1 });
-      if (sql.startsWith("COMMIT")) return Promise.resolve();
-      return Promise.resolve({ rows: [] });
-    });
-    pool.connect.mockResolvedValueOnce(client);
+  it("cancels the booking", async () => {
+    pool.query
+      .mockResolvedValueOnce({ rows: [{ mentee_email: "kwesi@example.com" }] })
+      .mockResolvedValueOnce({ rowCount: 1 });
 
     const res = await request(app).delete("/api/bookings/1").send({ email: "kwesi@example.com" });
     expect(res.status).toBe(200);

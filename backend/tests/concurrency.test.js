@@ -1,7 +1,8 @@
-// Real-database proof that two simultaneous booking attempts on the same
-// slot cannot both succeed. This talks to an actual Postgres instance (not
-// mocked), because the guarantee we're proving lives in Postgres's row
-// locking, not in JS — a mocked test can't demonstrate that.
+// Real-database proof that overlapping booking attempts for the same mentor
+// cannot both succeed — including across *different* session durations. This
+// talks to an actual Postgres instance (not mocked), because the guarantee
+// we're proving lives in Postgres's EXCLUDE constraint (schema.sql), not in
+// JS — a mocked test can't demonstrate that.
 //
 // Skipped automatically unless TEST_DATABASE_URL is set, so the default
 // `npm test` run stays fully offline. Run explicitly with:
@@ -10,12 +11,11 @@
 const hasDb = !!process.env.TEST_DATABASE_URL;
 const describeIfDb = hasDb ? describe : describe.skip;
 
-describeIfDb("concurrent booking attempts on the same slot (real Postgres)", () => {
+describeIfDb("concurrent / overlapping booking attempts (real Postgres)", () => {
   let pool;
   let app;
   let request;
   let mentorId;
-  let slotId;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
@@ -33,15 +33,11 @@ describeIfDb("concurrent booking attempts on the same slot (real Postgres)", () 
     await pool.query(fs.readFileSync(path.join(__dirname, "..", "schema.sql"), "utf8"));
 
     const mentor = await pool.query(
-      `INSERT INTO mentors (name, title, bio, color) VALUES ('Test Mentor', 'Test', 'Test bio', '#000000') RETURNING id`
+      `INSERT INTO mentors (name, title, bio, color, allowed_durations)
+       VALUES ('Test Mentor', 'Test', 'Test bio', '#000000', '{30,45,60}')
+       RETURNING id`
     );
     mentorId = mentor.rows[0].id;
-
-    const slot = await pool.query(
-      `INSERT INTO slots (mentor_id, start_time, end_time) VALUES ($1, now() + interval '1 day', now() + interval '1 day 30 minutes') RETURNING id`,
-      [mentorId]
-    );
-    slotId = slot.rows[0].id;
 
     request = require("supertest");
     // Fresh require so the app picks up the env vars set above.
@@ -54,11 +50,16 @@ describeIfDb("concurrent booking attempts on the same slot (real Postgres)", () 
     await pool.end();
   });
 
-  it("lets exactly one of five simultaneous requests for the same slot win", async () => {
+  afterEach(async () => {
+    await pool.query("DELETE FROM bookings WHERE mentor_id = $1", [mentorId]);
+  });
+
+  it("lets exactly one of five simultaneous requests for the identical time win", async () => {
+    const start = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
     const attempt = (name) =>
       request(app)
         .post("/api/bookings")
-        .send({ slot_id: slotId, name, email: `${name.toLowerCase()}@example.com` });
+        .send({ mentor_id: mentorId, start_time: start, duration: 30, name, email: `${name.toLowerCase()}@example.com` });
 
     const names = ["RequesterA", "RequesterB", "RequesterC", "RequesterD", "RequesterE"];
     const results = await Promise.all(names.map(attempt));
@@ -68,10 +69,46 @@ describeIfDb("concurrent booking attempts on the same slot (real Postgres)", () 
     expect(succeeded).toHaveLength(1);
     expect(conflicted).toHaveLength(4);
 
-    const bookings = await pool.query("SELECT * FROM bookings WHERE slot_id = $1", [slotId]);
+    const bookings = await pool.query("SELECT * FROM bookings WHERE mentor_id = $1", [mentorId]);
     expect(bookings.rows).toHaveLength(1);
+  });
 
-    const slot = await pool.query("SELECT status FROM slots WHERE id = $1", [slotId]);
-    expect(slot.rows[0].status).toBe("booked");
+  it("blocks a 30-minute booking that starts partway through an existing 60-minute booking", async () => {
+    const base = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+    base.setUTCHours(10, 0, 0, 0);
+
+    const first = await request(app)
+      .post("/api/bookings")
+      .send({ mentor_id: mentorId, start_time: base.toISOString(), duration: 60, name: "LongBooker", email: "long@example.com" });
+    expect(first.status).toBe(201);
+
+    // Starts 15 minutes into the 60-minute booking (10:00-11:00) — clearly overlapping.
+    const overlapStart = new Date(base.getTime() + 15 * 60 * 1000).toISOString();
+    const second = await request(app)
+      .post("/api/bookings")
+      .send({ mentor_id: mentorId, start_time: overlapStart, duration: 30, name: "ShortBooker", email: "short@example.com" });
+    expect(second.status).toBe(409);
+
+    const bookings = await pool.query("SELECT * FROM bookings WHERE mentor_id = $1", [mentorId]);
+    expect(bookings.rows).toHaveLength(1);
+  });
+
+  it("allows a 30-minute booking that starts exactly when a prior 60-minute booking ends", async () => {
+    const base = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000);
+    base.setUTCHours(10, 0, 0, 0);
+
+    const first = await request(app)
+      .post("/api/bookings")
+      .send({ mentor_id: mentorId, start_time: base.toISOString(), duration: 60, name: "LongBooker", email: "long2@example.com" });
+    expect(first.status).toBe(201);
+
+    const adjacentStart = new Date(base.getTime() + 60 * 60 * 1000).toISOString(); // 11:00, right after
+    const second = await request(app)
+      .post("/api/bookings")
+      .send({ mentor_id: mentorId, start_time: adjacentStart, duration: 30, name: "NextBooker", email: "next@example.com" });
+    expect(second.status).toBe(201);
+
+    const bookings = await pool.query("SELECT * FROM bookings WHERE mentor_id = $1", [mentorId]);
+    expect(bookings.rows).toHaveLength(2);
   });
 });

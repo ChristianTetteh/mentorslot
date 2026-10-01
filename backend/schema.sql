@@ -1,5 +1,9 @@
 -- MentorSlot schema. Safe to re-run (idempotent).
 
+-- Needed for the EXCLUDE constraint below: lets a GiST index enforce equality
+-- (mentor_id) alongside a range-overlap check in the same constraint.
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
 -- A field is a broad profession/career category (Tech & IT, Healthcare, Law, ...).
 -- Mentors belong to exactly one field; the homepage browses fields first, then
 -- the mentors within one, rather than one flat list of every mentor.
@@ -28,33 +32,60 @@ CREATE INDEX IF NOT EXISTS idx_mentors_field ON mentors (field_id);
 -- Lets seed.js upsert mentors by name instead of duplicating them on every boot.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mentors_name ON mentors (name);
 
--- Each row is one bookable time slot for one mentor. `status` is the fast
--- path for "is this slot open" (used for the atomic booking update below);
--- the UNIQUE constraint on bookings.slot_id is the hard, DB-enforced
--- guarantee that backs it up even under concurrent requests.
-CREATE TABLE IF NOT EXISTS slots (
-  id SERIAL PRIMARY KEY,
-  mentor_id INTEGER NOT NULL REFERENCES mentors(id) ON DELETE CASCADE,
-  start_time TIMESTAMPTZ NOT NULL,
-  end_time TIMESTAMPTZ NOT NULL,
-  status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'booked')),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (mentor_id, start_time)
-);
+-- Which session lengths (minutes) a mentor offers. 30 is always included by
+-- convention (seed.js enforces this) so there's always a default that works.
+ALTER TABLE mentors ADD COLUMN IF NOT EXISTS allowed_durations SMALLINT[] NOT NULL DEFAULT '{30}';
 
-CREATE INDEX IF NOT EXISTS idx_slots_mentor_time ON slots (mentor_id, start_time);
-CREATE INDEX IF NOT EXISTS idx_slots_status_time ON slots (status, start_time);
+-- Availability is no longer a pre-generated table of fixed-length slots.
+-- Variable session lengths (30/45/60 min) mean "is this mentor free at this
+-- moment" has to be answered against arbitrary time ranges, not fixed-width
+-- rows, so it's computed on request (see routes/mentors.js) from business
+-- hours minus this table's existing rows. The `slots` table from the first
+-- release is dropped as part of that move — nothing reads or writes it
+-- anymore, and no booking data is lost (it only ever mirrored `bookings`,
+-- which is preserved below).
+DROP TABLE IF EXISTS slots CASCADE;
 
 CREATE TABLE IF NOT EXISTS bookings (
   id SERIAL PRIMARY KEY,
-  -- UNIQUE here is the real double-booking guard: even if two requests race
-  -- past the application-level check at the exact same instant, the second
-  -- INSERT for the same slot_id is rejected by Postgres itself.
-  slot_id INTEGER NOT NULL UNIQUE REFERENCES slots(id) ON DELETE CASCADE,
   mentor_id INTEGER NOT NULL REFERENCES mentors(id) ON DELETE CASCADE,
   mentee_name TEXT NOT NULL,
   mentee_email TEXT NOT NULL,
+  start_time TIMESTAMPTZ NOT NULL,
+  end_time TIMESTAMPTZ NOT NULL,
+  duration_minutes SMALLINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Migrating an existing deployment: the old `bookings` table had a `slot_id`
+-- column (now meaningless, since `slots` is gone) and no start/end/duration
+-- columns at all. Add what's missing; this is safe to run against an empty
+-- table (true for every deployment of this app so far) or re-run as a no-op.
+ALTER TABLE bookings DROP COLUMN IF EXISTS slot_id;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS start_time TIMESTAMPTZ NOT NULL;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS end_time TIMESTAMPTZ NOT NULL;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS duration_minutes SMALLINT NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_bookings_email ON bookings (mentee_email);
+CREATE INDEX IF NOT EXISTS idx_bookings_mentor_time ON bookings (mentor_id, start_time);
+
+-- THE double-booking / overlap guard. Postgres itself refuses to let two
+-- bookings for the same mentor exist with overlapping [start_time, end_time)
+-- ranges, however those ranges are shaped — a 60-minute booking at 9:00
+-- collides with a 30-minute booking at 9:15 just as surely as two identical
+-- 9:00 bookings would, because this is a genuine interval-overlap check, not
+-- a same-slot check. It is enforced atomically on INSERT by the database's
+-- own index, the same way a UNIQUE constraint is: no application-level
+-- locking or transaction choreography is needed for correctness here (see
+-- routes/bookings.js). A violation raises Postgres error code 23P01, which
+-- the API turns into a 409.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'no_overlapping_bookings'
+  ) THEN
+    ALTER TABLE bookings
+      ADD CONSTRAINT no_overlapping_bookings
+      EXCLUDE USING gist (mentor_id WITH =, tstzrange(start_time, end_time) WITH &&);
+  END IF;
+END $$;

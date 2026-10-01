@@ -11,22 +11,28 @@ task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a 
 
 **Core requirements**
 - **Available time slots** — browse mentors, see their open slots grouped by day
-- **Pick and confirm** — select a slot, enter name + email, confirm the booking
-- **Stored in a database, no double-booking** — bookings persist in PostgreSQL; a slot can
-  never be booked twice, even under concurrent requests (see [Preventing double-booking](#preventing-double-booking))
+- **Pick and confirm** — choose a session length, pick a slot, enter name + email, confirm
+  the booking
+- **Stored in a database, no double-booking** — bookings persist in PostgreSQL; no two
+  bookings for the same mentor can ever overlap in time, even across different session
+  lengths or under concurrent requests (see [Preventing double-booking](#preventing-double-booking))
 
 **Beyond the brief**
+- **Variable session lengths** — 30, 45, or 60 minutes, with 30 as the default. Each mentor
+  only offers the lengths they've chosen to (see [Session lengths](#session-lengths)) — not
+  every mentor does every length, and the UI reflects that.
 - **Browse by field** — 10 career fields (Tech & IT, Healthcare & Medicine, Law & Legal,
   Engineering & Construction, and more), 32 mentors total, so the app reads like a real
   multi-industry mentorship platform instead of one flat list. All mentor profiles are
   fictional demo data, not real people.
 - **No account needed** — booking only asks for a name and email; "my bookings" are looked
   up by email, no login/password anywhere
-- **Cancel + rebook** — cancelling a booking frees the slot so someone else (or the same
+- **Cancel + rebook** — cancelling a booking frees the time so someone else (or the same
   person) can take it
 - **Real concurrency test, not a mocked one** — a Jest suite fires 5 simultaneous booking
-  requests at the same slot against a real local Postgres instance and asserts exactly one
-  wins (see [Testing](#testing))
+  requests at the same time against a real local Postgres instance and asserts exactly one
+  wins, plus a dedicated test proving a 30-minute booking can't be squeezed into the middle
+  of someone else's 60-minute session (see [Testing](#testing))
 - **Rate limiting + security headers** — Helmet, and a dedicated rate limit on the booking
   endpoint to blunt scripted slot-grabbing
 - **Self-seeding demo data** — every boot re-runs an idempotent seed script, so the live
@@ -45,28 +51,52 @@ mentorslot/
   frontend/    React app (Vite)
 ```
 
+## Session lengths
+
+Sessions can be **30, 45, or 60 minutes**, with 30 as the default. Which lengths a given
+mentor offers is configurable per mentor (`mentors.allowed_durations`, a Postgres array) —
+the seed data deliberately varies it instead of giving everyone the full menu, e.g. one
+mentor only takes 30-minute sessions, another offers 30 or 45, another the full 30/45/60,
+and another skips 45 and offers only 30 or 60. The booking UI shows a duration picker on
+each mentor's page, greys out lengths that mentor doesn't offer, and the server independently
+re-validates the chosen duration against that mentor's `allowed_durations` before ever
+touching the bookings table — a disabled button in the UI is a convenience, not the only
+guard.
+
 ## Preventing double-booking
 
-Two layers, so a bug in one doesn't let a double-booking slip through:
+Variable session lengths mean two bookings can collide without being for the *identical*
+time — a 60-minute booking at 9:00 and a 30-minute booking at 9:15 overlap just as surely as
+two bookings for the exact same slot would. A fixed-slot `UNIQUE` constraint can't express
+that, so the guarantee lives in a single Postgres **`EXCLUDE` constraint** instead:
 
-1. **Atomic conditional update.** Booking a slot runs inside a transaction:
-   ```sql
-   UPDATE slots
-   SET status = 'booked'
-   WHERE id = $1 AND status = 'available' AND start_time > now()
-   RETURNING mentor_id, start_time, end_time
-   ```
-   Postgres row-locks the targeted slot for the duration of the transaction. If two requests
-   race for the same slot, the second one blocks until the first commits, then its `UPDATE`
-   matches zero rows (the status is no longer `'available'`) and the API returns `409`
-   without ever inserting a booking.
-2. **`UNIQUE` constraint on `bookings.slot_id`** — defense in depth. Even if the application
-   logic above were ever bypassed, the database itself refuses a second booking row for the
-   same slot (Postgres error `23505`), which the API also catches and turns into a `409`.
+```sql
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+ALTER TABLE bookings
+  ADD CONSTRAINT no_overlapping_bookings
+  EXCLUDE USING gist (mentor_id WITH =, tstzrange(start_time, end_time) WITH &&);
+```
+
+This tells Postgres: for a given `mentor_id`, no two rows may have overlapping
+`[start_time, end_time)` ranges — enforced atomically on every `INSERT`, the same way a
+`UNIQUE` constraint is, with no manual transaction or row-locking needed in the API code. A
+plain `INSERT INTO bookings (...)` either succeeds or raises error code `23P01`
+(`exclusion_violation`), which the API catches and turns into a `409`.
+
+Available slots are also computed *live* on each request (business-hours grid minus that
+mentor's existing bookings for the requested duration) rather than read off a pre-generated
+table, since a fixed-granularity slot table can't cleanly represent 30/45/60-minute
+availability at once — see `backend/lib/schedule.js` and `backend/routes/mentors.js`. That
+read path is a convenience for not offering slots that would obviously conflict; the actual
+guarantee against bad data ever landing in the table is the `EXCLUDE` constraint above.
 
 This is proven, not just asserted: `tests/concurrency.test.js` opens a real Postgres
-connection, fires 5 simultaneous booking requests at one slot, and asserts exactly 1
-succeeds and 4 get `409` — see [Testing](#testing).
+connection and (1) fires 5 simultaneous booking requests at the identical time and asserts
+exactly 1 succeeds and 4 get `409`, (2) books a 60-minute session and then attempts a
+30-minute booking starting 15 minutes into it, asserting that also gets `409`, and (3) books
+a 30-minute session starting exactly when a prior 60-minute session ends and asserts that
+succeeds (adjacent, non-overlapping bookings are fine) — see [Testing](#testing).
 
 ## 1. Set up the database
 
@@ -78,8 +108,8 @@ cd backend
 cp .env.example .env
 # edit .env: set DATABASE_URL
 npm install
-npm run migrate   # creates mentors, slots, bookings tables (safe to re-run; idempotent)
-npm run seed      # generates the next 7 weekdays of slots for each mentor
+npm run migrate   # creates fields, mentors, bookings tables + the overlap-prevention constraint (safe to re-run; idempotent)
+npm run seed      # upserts the 10 fields and 32 mentors (availability is computed live, not pre-seeded)
 ```
 
 ## 2. Run the backend
@@ -109,8 +139,9 @@ npm test
 ```
 
 Runs the offline suite (mocked database, no live Postgres or network needed): input
-validation, the mentors/slots routes, and the bookings routes (successful booking, the
-0-rows-affected double-booking path, the unique-violation fallback, lookup by email, and
+validation (including the three allowed session lengths), the mentors/slots routes (including
+duration filtering and a mentor-doesn't-offer-this-length rejection), and the bookings routes
+(successful booking, the exclusion-constraint double-booking path, lookup by email, and
 cancel with ownership-by-email checks).
 
 The concurrency proof needs a real database and is skipped by default:
@@ -119,9 +150,11 @@ The concurrency proof needs a real database and is skipped by default:
 TEST_DATABASE_URL="postgresql://user:pass@localhost:5432/mentorslot_test" npm run test:concurrency
 ```
 
-This spins up one mentor and one open slot, fires 5 simultaneous `POST /api/bookings`
-requests at it, and asserts exactly 1 returns `201` and 4 return `409` — a real proof of the
-guard in [Preventing double-booking](#preventing-double-booking), not a mocked stand-in for one.
+This spins up one mentor and proves the `EXCLUDE` constraint three ways — 5 simultaneous
+identical-time bookings (exactly 1 wins), a 30-minute booking that starts partway through an
+existing 60-minute booking (rejected), and a 30-minute booking that starts exactly when a
+prior 60-minute booking ends (allowed) — a real proof of the guard in
+[Preventing double-booking](#preventing-double-booking), not a mocked stand-in for one.
 
 ## API overview
 
@@ -129,11 +162,11 @@ guard in [Preventing double-booking](#preventing-double-booking), not a mocked s
 |--------|-------|-------------|
 | GET    | `/api/fields` | List fields with a mentor count for each |
 | GET    | `/api/fields/:id/mentors` | A field + its mentors |
-| GET    | `/api/mentors` | List all mentors (flat, across every field) |
-| GET    | `/api/mentors/:id/slots?days=` | A mentor + their available future slots |
-| POST   | `/api/bookings` | Book a slot `{ slot_id, name, email }` — `409` if already taken |
+| GET    | `/api/mentors` | List all mentors (flat, across every field), each with its `allowed_durations` |
+| GET    | `/api/mentors/:id/slots?duration=&days=` | A mentor + their available future slots for a given session length (`duration` defaults to 30; must be one the mentor offers) |
+| POST   | `/api/bookings` | Book a session `{ mentor_id, start_time, duration, name, email }` — `400` if the mentor doesn't offer that duration, `409` if the time overlaps an existing booking |
 | GET    | `/api/bookings?email=` | List bookings for an email address |
-| DELETE | `/api/bookings/:id` | Cancel a booking `{ email }` in the body must match the booking's owner; frees the slot |
+| DELETE | `/api/bookings/:id` | Cancel a booking `{ email }` in the body must match the booking's owner |
 
 `POST /api/bookings` is rate-limited (30 requests / 15 min / IP).
 
@@ -146,7 +179,7 @@ The app is split across three managed services, same shape as a typical MERN-sty
 **Backend — Render Web Service:**
 1. New → Web Service → point at the repo, build/start commands `cd backend && npm install` / `cd backend && npm start`
 2. Environment variables: `DATABASE_URL` (Supabase's **connection pooler** string — `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres` — not the direct `db.<project-ref>.supabase.co` host; Render's network can't reach that host's IPv6-only address, which surfaces as `ENETUNREACH` at boot), `CORS_ORIGIN` (the deployed frontend's origin), `PGSSL=true`
-3. `npm start` runs `node migrate.js && node seed.js && node server.js`, so the schema is applied and fresh slots are seeded on every boot (idempotent — safe to leave permanently, keeps the live demo bookable as time passes)
+3. `npm start` runs `node migrate.js && node seed.js && node server.js`, so the schema (including the overlap-prevention constraint) is applied and the fields/mentors are upserted on every boot (idempotent — safe to leave permanently; availability itself is computed live, not seeded, so it's always current)
 
 **Frontend — Vercel:**
 1. Import the repo → set the project's **Root Directory** to `frontend` (Vercel auto-detects Vite)

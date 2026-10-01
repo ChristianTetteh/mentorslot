@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../api";
-import { fullDateTimeLabel } from "../utils/dates";
+import { fullDateTimeRangeLabel } from "../utils/dates";
 
 const LAST_EMAIL_KEY = "mentorslot_last_email";
 
@@ -92,8 +92,10 @@ export default function MyBookings() {
             {bookings.map((b) => (
               <li key={b.id} className="booking-row" style={{ "--mentor-color": b.color }}>
                 <div>
-                  <p className="booking-row-mentor">{b.mentor_name}</p>
-                  <p className="booking-row-when">{fullDateTimeLabel(b.start_time)}</p>
+                  <p className="booking-row-mentor">
+                    {b.mentor_name} <span className="booking-row-duration">· {b.duration_minutes} min</span>
+                  </p>
+                  <p className="booking-row-when">{fullDateTimeRangeLabel(b.start_time, b.end_time)}</p>
                 </div>
                 <button
                   className="btn-ghost btn-danger"

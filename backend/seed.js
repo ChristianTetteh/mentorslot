@@ -232,29 +232,15 @@ const MENTORS = [
   },
 ];
 
-const SLOT_START_HOUR = 9; // 09:00
-const MORNING_END_HOUR = 12; // slots stop at 12:00, resume at 13:00
-const SLOT_END_HOUR = 17; // 17:00
-const SLOT_MINUTES = 30;
-const DAYS_AHEAD = 14; // generate slots for the next 14 calendar days (~10 weekdays)
-const WEEKDAYS_ONLY = true;
-
-function isWeekday(date) {
-  const day = date.getUTCDay();
-  return day !== 0 && day !== 6;
-}
-
-function* slotTimesForDay(dayStart) {
-  for (let hour = SLOT_START_HOUR; hour < SLOT_END_HOUR; hour++) {
-    if (hour >= MORNING_END_HOUR && hour < 13) continue; // lunch break
-    for (let min = 0; min < 60; min += SLOT_MINUTES) {
-      const start = new Date(dayStart);
-      start.setUTCHours(hour, min, 0, 0);
-      const end = new Date(start.getTime() + SLOT_MINUTES * 60 * 1000);
-      yield { start, end };
-    }
-  }
-}
+// Which session lengths each mentor offers. 30 minutes is in every pattern —
+// it's the default length, so every mentor has to support it. The patterns
+// are deliberately varied (not "every mentor offers everything") per field,
+// cycled across the mentor list below:
+//   - only 30
+//   - 30 or 45
+//   - 30, 45, or 60 (the full menu)
+//   - 30 or 60 (skips 45)
+const DURATION_PATTERNS = [[30], [30, 45], [30, 45, 60], [30, 60]];
 
 async function seed() {
   // Fields: upsert by slug so re-running (every boot) is a no-op once seeded,
@@ -272,44 +258,24 @@ async function seed() {
   console.log(`✓ ${FIELDS.length} fields ready.`);
 
   // Mentors: upsert by name (unique index) so existing mentors keep their id
-  // (and their already-booked slots stay linked), while new ones get created
-  // and everyone's field_id/title/bio/color stays in sync with this file.
-  const mentorIds = [];
-  for (const m of MENTORS) {
+  // (and their existing bookings stay linked), while new ones get created and
+  // everyone's field_id/title/bio/color/allowed_durations stays in sync with
+  // this file.
+  let mentorCount = 0;
+  for (const [index, m] of MENTORS.entries()) {
     const fieldId = fieldIds[m.field];
     const color = m.color || FIELDS.find((f) => f.slug === m.field).color;
-    const result = await pool.query(
-      `INSERT INTO mentors (name, title, bio, color, field_id) VALUES ($1, $2, $3, $4, $5)
+    const durations = m.durations || DURATION_PATTERNS[index % DURATION_PATTERNS.length];
+    await pool.query(
+      `INSERT INTO mentors (name, title, bio, color, field_id, allowed_durations) VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (name) DO UPDATE SET
-         title = EXCLUDED.title, bio = EXCLUDED.bio, color = EXCLUDED.color, field_id = EXCLUDED.field_id
-       RETURNING id`,
-      [m.name, m.title, m.bio, color, fieldId]
+         title = EXCLUDED.title, bio = EXCLUDED.bio, color = EXCLUDED.color,
+         field_id = EXCLUDED.field_id, allowed_durations = EXCLUDED.allowed_durations`,
+      [m.name, m.title, m.bio, color, fieldId, durations]
     );
-    mentorIds.push(result.rows[0].id);
+    mentorCount++;
   }
-  console.log(`✓ ${mentorIds.length} mentors ready.`);
-
-  let slotsCreated = 0;
-  const today = new Date();
-  today.setUTCHours(0, 0, 0, 0);
-
-  for (let d = 1; d <= DAYS_AHEAD; d++) {
-    const day = new Date(today.getTime() + d * 24 * 60 * 60 * 1000);
-    if (WEEKDAYS_ONLY && !isWeekday(day)) continue;
-
-    for (const mentorId of mentorIds) {
-      for (const { start, end } of slotTimesForDay(day)) {
-        const result = await pool.query(
-          `INSERT INTO slots (mentor_id, start_time, end_time)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (mentor_id, start_time) DO NOTHING`,
-          [mentorId, start.toISOString(), end.toISOString()]
-        );
-        slotsCreated += result.rowCount;
-      }
-    }
-  }
-  console.log(`✓ ${slotsCreated} new slots created (existing ones left untouched).`);
+  console.log(`✓ ${mentorCount} mentors ready.`);
   await pool.end();
 }
 
