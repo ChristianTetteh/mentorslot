@@ -4,8 +4,8 @@ A full-stack booking/scheduling app built for the "Simple Booking/Scheduling App
 task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a genuine
 (not cosmetic) double-booking guard.
 
-**Live demo:** _add once deployed_
-**API:** _add once deployed_
+**Live demo:** https://mentorslot.vercel.app
+**API:** https://mentorslot-backend.onrender.com
 
 ## What's included
 
@@ -131,11 +131,11 @@ guard in [Preventing double-booking](#preventing-double-booking), not a mocked s
 
 The app is split across three managed services, same shape as a typical MERN-style deploy:
 
-**Database:** [Supabase](https://supabase.com) (managed PostgreSQL, session pooler connection).
+**Database:** [Supabase](https://supabase.com) (managed PostgreSQL).
 
 **Backend — Render Web Service:**
 1. New → Web Service → point at the repo, build/start commands `cd backend && npm install` / `cd backend && npm start`
-2. Environment variables: `DATABASE_URL` (Supabase's pooler connection string), `CORS_ORIGIN` (the deployed frontend's origin), `PGSSL=true`
+2. Environment variables: `DATABASE_URL` (Supabase's **connection pooler** string — `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres` — not the direct `db.<project-ref>.supabase.co` host; Render's network can't reach that host's IPv6-only address, which surfaces as `ENETUNREACH` at boot), `CORS_ORIGIN` (the deployed frontend's origin), `PGSSL=true`
 3. `npm start` runs `node migrate.js && node seed.js && node server.js`, so the schema is applied and fresh slots are seeded on every boot (idempotent — safe to leave permanently, keeps the live demo bookable as time passes)
 
 **Frontend — Vercel:**
