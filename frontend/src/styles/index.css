@@ -1,0 +1,474 @@
+:root {
+  --paper: #EFF3EE;
+  --surface: #FFFFFF;
+  --line: #D7DDD3;
+  --ink: #16241D;
+  --muted: #5B6B60;
+  --forest: #2F5233;
+  --forest-dark: #223E28;
+  --mustard: #E0A526;
+  --mustard-deep: #B8850F;
+  --rose: #C1544B;
+
+  --fs-sm: 13px;
+  --fs-base: 15px;
+  --fs-md: 17px;
+  --fs-lg: 20px;
+  --fs-display-sm: 26px;
+  --fs-display-md: 34px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 28px;
+  --sp-7: 40px;
+
+  --shadow-sm: 0 1px 2px rgba(22, 36, 29, 0.08);
+  --shadow-md: 0 10px 28px rgba(22, 36, 29, 0.12);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { min-height: 100%; }
+html, body { overflow-x: hidden; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: "Fraunces", Georgia, serif;
+  margin: 0;
+  color: var(--ink);
+}
+
+button, input {
+  font-family: inherit;
+  color: inherit;
+  font-size: inherit;
+}
+
+a { color: var(--forest); }
+
+.muted { color: var(--muted); }
+
+/* ---------- Layout shell ---------- */
+
+.app { min-height: 100vh; display: flex; flex-direction: column; }
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: "Fraunces", serif;
+  font-weight: 600;
+  font-size: var(--fs-lg);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand-mark { color: var(--forest); display: flex; }
+
+.site-nav { display: flex; gap: var(--sp-5); flex-wrap: wrap; }
+
+.site-nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--fs-base);
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+
+.site-nav a:hover { color: var(--ink); }
+
+.site-nav a.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--mustard);
+  font-weight: 600;
+}
+
+.app-main {
+  flex: 1;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-5) var(--sp-7);
+}
+
+.page-title { font-size: var(--fs-display-sm); margin-bottom: var(--sp-2); }
+
+/* ---------- Buttons ---------- */
+
+.btn-primary {
+  background: var(--forest);
+  color: #F4F7F2;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-weight: 600;
+  font-size: var(--fs-base);
+  cursor: pointer;
+}
+.btn-primary:hover { background: var(--forest-dark); }
+.btn-primary:active { transform: scale(0.98); }
+.btn-primary:disabled { opacity: 0.6; cursor: default; transform: none; }
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: var(--fs-base);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+.btn-ghost:hover { border-color: var(--muted); }
+
+.btn-danger { color: var(--rose); border-color: rgba(193, 84, 75, 0.35); }
+.btn-danger:hover { border-color: var(--rose); background: rgba(193, 84, 75, 0.06); }
+
+.error-banner {
+  background: rgba(193, 84, 75, 0.1);
+  color: var(--rose);
+  border: 1px solid rgba(193, 84, 75, 0.3);
+  border-radius: 8px;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-sm);
+}
+
+.form-error { color: var(--rose); font-size: var(--fs-sm); margin: 0; }
+
+/* ---------- Hero / mentor list ---------- */
+
+.hero { margin-bottom: var(--sp-6); }
+.hero-title {
+  font-size: var(--fs-display-md);
+  font-weight: 600;
+  line-height: 1.15;
+  margin-bottom: var(--sp-3);
+  max-width: 20ch;
+}
+.hero-sub { color: var(--muted); max-width: 56ch; margin: 0; }
+
+.mentor-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-4);
+}
+
+@media (min-width: 620px) {
+  .mentor-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.mentor-card {
+  display: flex;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  text-decoration: none;
+  color: inherit;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  min-width: 0;
+}
+.mentor-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+
+.mentor-card-tab { width: 6px; flex-shrink: 0; }
+
+.mentor-card-body {
+  padding: var(--sp-4) var(--sp-5);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mentor-card-name { font-size: var(--fs-lg); font-weight: 600; }
+.mentor-card-title { color: var(--muted); font-size: var(--fs-sm); margin: 0 0 var(--sp-2); }
+.mentor-card-bio {
+  font-size: var(--fs-sm);
+  color: var(--ink);
+  margin: 0 0 var(--sp-3);
+  line-height: 1.5;
+}
+.mentor-card-cta {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--forest);
+  margin-top: auto;
+}
+
+/* ---------- Mentor slot picker ---------- */
+
+.back-link {
+  display: inline-block;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-4);
+}
+.back-link:hover { color: var(--ink); }
+
+.mentor-header {
+  border-left: 4px solid var(--mentor-color, var(--forest));
+  padding-left: var(--sp-4);
+  margin-bottom: var(--sp-5);
+}
+.mentor-header h1 { font-size: var(--fs-display-sm); }
+.mentor-header-title { color: var(--muted); margin: 2px 0 0; }
+
+.day-tabs {
+  display: flex;
+  gap: var(--sp-2);
+  overflow-x: auto;
+  padding-bottom: var(--sp-2);
+  margin-bottom: var(--sp-4);
+  -webkit-overflow-scrolling: touch;
+}
+
+.day-tab {
+  flex-shrink: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.day-tab:hover { border-color: var(--muted); color: var(--ink); }
+.day-tab.is-active {
+  background: var(--forest);
+  border-color: var(--forest);
+  color: #F4F7F2;
+  font-weight: 600;
+}
+
+.ledger {
+  list-style: none;
+  margin: 0 0 var(--sp-6);
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.ledger-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.ledger-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  flex-shrink: 0;
+  width: 88px;
+}
+
+.ledger-rule {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 1px dashed var(--line);
+  height: 1px;
+}
+
+.ledger-book-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--mustard-deep);
+  color: var(--mustard-deep);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.ledger-book-btn:hover { background: var(--mustard); border-color: var(--mustard); color: #3A2A05; }
+
+/* ---------- Confirm panel ---------- */
+
+/* `position: sticky` doubles as the positioning context for the absolutely
+   placed close button below — any position value other than `static` works
+   for that, so this is deliberately a single declaration, not `relative`
+   layered on afterward (that pattern is what broke it on mobile before:
+   the mobile override below used to switch this to `static`, which made
+   the close button fall back to the viewport's corner instead of the
+   panel's). */
+.confirm-panel {
+  position: sticky;
+  bottom: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: var(--sp-5);
+  box-shadow: var(--shadow-md);
+  margin-top: var(--sp-5);
+}
+
+.confirm-panel-close {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  background: none;
+  border: none;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.confirm-panel-close:hover { color: var(--ink); }
+
+.confirm-panel-label { color: var(--muted); font-size: var(--fs-sm); margin: 0; }
+.confirm-panel-when { font-family: "Fraunces", serif; font-size: var(--fs-lg); font-weight: 600; margin: 2px 0 var(--sp-4); }
+
+.confirm-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.confirm-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.confirm-form input {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px 12px;
+  font-size: var(--fs-base);
+  color: var(--ink);
+  outline: none;
+  min-width: 0;
+}
+.confirm-form input:focus { border-color: var(--forest); }
+
+/* ---------- Stamped confirmation ticket ---------- */
+
+.stamp-ticket {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: var(--sp-7) var(--sp-5) var(--sp-6);
+  text-align: center;
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.stamp-ticket-stamp {
+  display: inline-block;
+  font-family: "Fraunces", serif;
+  font-weight: 700;
+  font-size: var(--fs-lg);
+  color: var(--forest);
+  border: 3px solid var(--forest);
+  border-radius: 8px;
+  padding: 6px 18px;
+  transform: rotate(-6deg) scale(0.6);
+  opacity: 0;
+  margin-bottom: var(--sp-5);
+  animation: stamp-in 0.45s 0.15s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+@keyframes stamp-in {
+  to { transform: rotate(-6deg) scale(1); opacity: 1; }
+}
+
+.stamp-ticket-label { color: var(--muted); margin: 0; font-size: var(--fs-sm); }
+.stamp-ticket-mentor { font-size: var(--fs-display-sm); margin: 2px 0; }
+.stamp-ticket-when { font-size: var(--fs-md); margin: 0 0 var(--sp-4); }
+.stamp-ticket-note { color: var(--muted); font-size: var(--fs-sm); max-width: 42ch; margin: 0 auto var(--sp-6); }
+
+.stamp-ticket-actions {
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stamp-ticket-stamp { animation: none; opacity: 1; transform: rotate(-6deg) scale(1); }
+}
+
+/* ---------- My bookings ---------- */
+
+.lookup-form {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin: var(--sp-4) 0 var(--sp-5);
+}
+
+.lookup-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px 12px;
+  font-size: var(--fs-base);
+  outline: none;
+}
+.lookup-form input:focus { border-color: var(--forest); }
+
+.booking-list { list-style: none; margin: 0; padding: 0; }
+
+.booking-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--mentor-color, var(--forest));
+  padding-left: var(--sp-3);
+}
+
+.booking-row-mentor { font-weight: 600; margin: 0; }
+.booking-row-when { color: var(--muted); font-size: var(--fs-sm); margin: 2px 0 0; }
+
+/* ---------- Mobile ---------- */
+
+@media (max-width: 620px) {
+  .site-header { padding: var(--sp-3) var(--sp-4); }
+  .app-main { padding: var(--sp-5) var(--sp-4) var(--sp-6); }
+  .hero-title { font-size: var(--fs-display-sm); max-width: none; }
+  /* `relative`, not `static` — keeps this a valid positioning context for
+     .confirm-panel-close (see note above) while dropping the sticky pin,
+     which isn't useful once the panel already sits in the normal flow on a
+     small screen. */
+  .confirm-panel { position: relative; bottom: auto; margin-top: var(--sp-5); }
+  .ledger-time { width: 72px; }
+}
