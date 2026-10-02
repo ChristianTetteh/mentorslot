@@ -5,13 +5,17 @@ jest.mock("../db", () => ({ query: jest.fn(), connect: jest.fn() }));
 const request = require("supertest");
 const pool = require("../db");
 const app = require("../server");
+const { useFixedClock, isoAt } = require("./helpers/clock");
+
+useFixedClock();
 
 beforeEach(() => {
   pool.query.mockReset();
   pool.connect.mockReset();
 });
 
-const futureStart = () => new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+// Tomorrow 09:00 UTC: a real grid slot under the fixed fake clock.
+const futureStart = () => isoAt(1, 9, 0);
 
 describe("POST /api/bookings", () => {
   it("rejects invalid input before touching the database", async () => {
@@ -19,6 +23,16 @@ describe("POST /api/bookings", () => {
       .post("/api/bookings")
       .send({ mentor_id: "not-a-number", start_time: futureStart(), duration: 30, name: "Ama", email: "a@b.com" });
     expect(res.status).toBe(400);
+    expect(pool.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a start time that isn't on the offered grid without touching the database", async () => {
+    for (const start_time of [isoAt(1, 9, 30), isoAt(5, 9, 0), isoAt(1, 8, 0), isoAt(31, 9, 0), isoAt(0, 15, 0)]) {
+      const res = await request(app)
+        .post("/api/bookings")
+        .send({ mentor_id: 1, start_time, duration: 30, name: "Kwesi Mensah", email: "kwesi@example.com" });
+      expect(res.status).toBe(400);
+    }
     expect(pool.query).not.toHaveBeenCalled();
   });
 
@@ -53,17 +67,17 @@ describe("POST /api/bookings", () => {
         rows: [
           {
             id: 5,
-            start_time: "2026-10-02T09:00:00Z",
-            end_time: "2026-10-02T09:30:00Z",
+            start_time: isoAt(1, 9, 0),
+            end_time: isoAt(1, 9, 30),
             duration_minutes: 30,
-            created_at: "2026-09-30T00:00:00Z",
+            created_at: isoAt(0, 9, 0),
           },
         ],
       });
 
     const res = await request(app)
       .post("/api/bookings")
-      .send({ mentor_id: 1, start_time: "2026-10-02T09:00:00Z", duration: 30, name: "Kwesi Mensah", email: "kwesi@example.com" });
+      .send({ mentor_id: 1, start_time: futureStart(), duration: 30, name: "Kwesi Mensah", email: "kwesi@example.com" });
 
     expect(res.status).toBe(201);
     expect(res.body.booking.mentor_name).toBe("Ama Boateng");
@@ -80,9 +94,10 @@ describe("POST /api/bookings", () => {
 
     const res = await request(app)
       .post("/api/bookings")
-      .send({ mentor_id: 1, start_time: "2026-10-02T09:00:00Z", duration: 60, name: "Kwesi Mensah", email: "kwesi@example.com" });
+      .send({ mentor_id: 1, start_time: futureStart(), duration: 60, name: "Kwesi Mensah", email: "kwesi@example.com" });
 
     expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/too close|overlaps/);
   });
 });
 

@@ -2,7 +2,14 @@ const express = require("express");
 const pool = require("../db");
 const asyncHandler = require("../lib/asyncHandler");
 const { parseId, parseIntParam } = require("../lib/validation");
-const { businessDays, gridStartsForDay, DAYS_AHEAD, MAX_DAYS_AHEAD, ALLOWED_DURATIONS, DEFAULT_DURATION } = require("../lib/schedule");
+const {
+  candidateSlots,
+  BUFFER_MINUTES,
+  DAYS_AHEAD,
+  MAX_DAYS_AHEAD,
+  ALLOWED_DURATIONS,
+  DEFAULT_DURATION,
+} = require("../lib/schedule");
 
 const router = express.Router();
 
@@ -57,33 +64,29 @@ router.get("/:id/slots", asyncHandler(async (req, res) => {
     }
 
     // Pull this mentor's existing bookings once, then filter the candidate
-    // grid against them in memory — one round trip, no N+1 queries. The
-    // actual no-overlap guarantee lives in the database's EXCLUDE constraint
-    // on write (schema.sql); this is just read-side convenience, so a bug
-    // here could at worst offer a slot that then 409s on booking, never the
-    // reverse.
+    // grid against them in memory — one round trip, no N+1 queries. Each
+    // booking is padded by the buffer on both sides here: a candidate must be
+    // at least BUFFER_MINUTES clear of it, matching the database's EXCLUDE
+    // constraint (migrations/002), which is the actual guarantee on write.
+    const now = new Date(Date.now());
+    const bufferMs = BUFFER_MINUTES * 60 * 1000;
+    const horizon = new Date(now);
+    horizon.setUTCHours(0, 0, 0, 0);
+    horizon.setUTCDate(horizon.getUTCDate() + days + 1);
     const existing = await pool.query(
       `SELECT start_time, end_time FROM bookings
-       WHERE mentor_id = $1 AND end_time > now()
-         AND start_time < (CURRENT_DATE + (($2::int + 1) || ' days')::interval)`,
-      [mentorId, days]
+       WHERE mentor_id = $1 AND end_time > $2 AND start_time < $3`,
+      [mentorId, new Date(now.getTime() - bufferMs), new Date(horizon.getTime() + bufferMs)]
     );
     const booked = existing.rows.map((r) => [new Date(r.start_time).getTime(), new Date(r.end_time).getTime()]);
 
-    const now = new Date();
-    const durationMs = duration * 60 * 1000;
     const slots = [];
-    for (const day of businessDays(now, days)) {
-      for (const { start, boundary } of gridStartsForDay(day, duration)) {
-        if (start <= now) continue;
-        const end = new Date(start.getTime() + durationMs);
-        if (end > boundary) continue; // defensive — gridStartsForDay already keeps candidates within the block
-        const startMs = start.getTime();
-        const endMs = end.getTime();
-        const overlaps = booked.some(([bStart, bEnd]) => startMs < bEnd && endMs > bStart);
-        if (overlaps) continue;
-        slots.push({ start_time: start.toISOString(), end_time: end.toISOString() });
-      }
+    for (const { start, end } of candidateSlots(now, days, duration)) {
+      const startMs = start.getTime();
+      const endMs = end.getTime();
+      const blocked = booked.some(([bStart, bEnd]) => startMs < bEnd + bufferMs && endMs + bufferMs > bStart);
+      if (blocked) continue;
+      slots.push({ start_time: start.toISOString(), end_time: end.toISOString() });
     }
 
     res.json({ mentor: mentor.rows[0], duration, slots });

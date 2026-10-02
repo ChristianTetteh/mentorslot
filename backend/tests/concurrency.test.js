@@ -1,8 +1,10 @@
-// Real-database proof that overlapping booking attempts for the same mentor
-// cannot both succeed — including across *different* session durations. This
-// talks to an actual Postgres instance (not mocked), because the guarantee
-// we're proving lives in Postgres's EXCLUDE constraint (migrations/), not in
-// JS — a mocked test can't demonstrate that.
+// Real-database proof that overlapping, too-close and concurrent booking
+// attempts for the same mentor cannot both succeed — including across
+// *different* session durations. This talks to an actual Postgres instance
+// (not mocked), because the guarantee we're proving lives in Postgres's
+// EXCLUDE constraint (migrations/002_buffer_constraint.sql), not in JS — a
+// mocked test can't demonstrate that. It also checks the migrations
+// themselves (idempotent, CHECK constraints) and cancel against real rows.
 //
 // Skipped automatically unless TEST_DATABASE_URL is set, so the default
 // `npm test` run stays fully offline. Run explicitly with:
@@ -11,11 +13,31 @@
 const hasDb = !!process.env.TEST_DATABASE_URL;
 const describeIfDb = hasDb ? describe : describe.skip;
 
-describeIfDb("concurrent / overlapping booking attempts (real Postgres)", () => {
+describeIfDb("booking rules against real Postgres", () => {
   let pool;
   let app;
   let request;
   let mentorId;
+  let businessDays;
+
+  // HH:MM UTC on the Nth upcoming bookable weekday — always a real grid day
+  // inside the horizon, whatever today's date is.
+  const at = (dayIndex, hour, minute = 0) => {
+    const d = new Date(businessDays[dayIndex]);
+    d.setUTCHours(hour, minute, 0, 0);
+    return d.toISOString();
+  };
+  const book = (start_time, duration, who = "booker") =>
+    request(app)
+      .post("/api/bookings")
+      .send({ mentor_id: mentorId, start_time, duration, name: `Test ${who}`, email: `${who}@example.com` });
+  const count = async () => (await pool.query("SELECT count(*)::int AS n FROM bookings WHERE mentor_id = $1", [mentorId])).rows[0].n;
+  const insertRaw = (start, end, minutes) =>
+    pool.query(
+      `INSERT INTO bookings (mentor_id, mentee_name, mentee_email, start_time, end_time, duration_minutes)
+       VALUES ($1, 'Raw', 'raw@example.com', $2, $3, $4)`,
+      [mentorId, start, end, minutes]
+    );
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
@@ -32,8 +54,9 @@ describeIfDb("concurrent / overlapping booking attempts (real Postgres)", () => 
 
     const mentor = await pool.query(
       `INSERT INTO mentors (name, title, bio, color, allowed_durations)
-       VALUES ('Test Mentor', 'Test', 'Test bio', '#000000', '{30,45,60}')
-       RETURNING id`
+       VALUES ($1, 'Test', 'Test bio', '#000000', '{30,45,60}')
+       RETURNING id`,
+      [`Test Mentor ${Date.now()}`]
     );
     mentorId = mentor.rows[0].id;
 
@@ -41,6 +64,7 @@ describeIfDb("concurrent / overlapping booking attempts (real Postgres)", () => 
     // Fresh require so the app picks up the env vars set above.
     jest.resetModules();
     app = require("../server");
+    businessDays = require("../lib/schedule").businessDays(new Date(), 30);
   });
 
   afterAll(async () => {
@@ -52,61 +76,119 @@ describeIfDb("concurrent / overlapping booking attempts (real Postgres)", () => 
     await pool.query("DELETE FROM bookings WHERE mentor_id = $1", [mentorId]);
   });
 
-  it("lets exactly one of five simultaneous requests for the identical time win", async () => {
-    const start = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
-    const attempt = (name) =>
-      request(app)
-        .post("/api/bookings")
-        .send({ mentor_id: mentorId, start_time: start, duration: 30, name, email: `${name.toLowerCase()}@example.com` });
+  describe("overlap", () => {
+    it("lets exactly one of five simultaneous requests for the identical time win", async () => {
+      const start = at(0, 9);
+      const names = ["RequesterA", "RequesterB", "RequesterC", "RequesterD", "RequesterE"];
+      const results = await Promise.all(names.map((n) => book(start, 30, n.toLowerCase())));
 
-    const names = ["RequesterA", "RequesterB", "RequesterC", "RequesterD", "RequesterE"];
-    const results = await Promise.all(names.map(attempt));
+      expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+      expect(results.filter((r) => r.status === 409)).toHaveLength(4);
+      expect(await count()).toBe(1);
+    });
 
-    const succeeded = results.filter((r) => r.status === 201);
-    const conflicted = results.filter((r) => r.status === 409);
-    expect(succeeded).toHaveLength(1);
-    expect(conflicted).toHaveLength(4);
-
-    const bookings = await pool.query("SELECT * FROM bookings WHERE mentor_id = $1", [mentorId]);
-    expect(bookings.rows).toHaveLength(1);
+    it("blocks a 30-minute booking that starts partway through an existing 60-minute booking", async () => {
+      expect((await book(at(1, 9), 60, "long")).status).toBe(201);
+      // 09:45 is on the 30-minute grid but sits inside 09:00-10:00.
+      expect((await book(at(1, 9, 45), 30, "short")).status).toBe(409);
+      expect(await count()).toBe(1);
+    });
   });
 
-  it("blocks a 30-minute booking that starts partway through an existing 60-minute booking", async () => {
-    const base = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
-    base.setUTCHours(10, 0, 0, 0);
+  describe("15-minute buffer", () => {
+    it("rejects a 60-minute session that starts the moment a 30-minute one ends (09:45-10:15 then 10:15-11:15)", async () => {
+      expect((await book(at(2, 9, 45), 30, "first")).status).toBe(201);
+      const second = await book(at(2, 10, 15), 60, "second");
+      expect(second.status).toBe(409);
+      expect(await count()).toBe(1);
+    });
 
-    const first = await request(app)
-      .post("/api/bookings")
-      .send({ mentor_id: mentorId, start_time: base.toISOString(), duration: 60, name: "LongBooker", email: "long@example.com" });
-    expect(first.status).toBe(201);
+    it("applies the buffer in the other order too (later session booked first)", async () => {
+      expect((await book(at(2, 10, 15), 60, "later")).status).toBe(201);
+      expect((await book(at(2, 9, 45), 30, "earlier")).status).toBe(409);
+      expect(await count()).toBe(1);
+    });
 
-    // Starts 15 minutes into the 60-minute booking (10:00-11:00) — clearly overlapping.
-    const overlapStart = new Date(base.getTime() + 15 * 60 * 1000).toISOString();
-    const second = await request(app)
-      .post("/api/bookings")
-      .send({ mentor_id: mentorId, start_time: overlapStart, duration: 30, name: "ShortBooker", email: "short@example.com" });
-    expect(second.status).toBe(409);
+    it("allows sessions with exactly a 15-minute gap, and more", async () => {
+      expect((await book(at(3, 9), 30, "one")).status).toBe(201); // 09:00-09:30
+      expect((await book(at(3, 9, 45), 30, "two")).status).toBe(201); // 15 min later
+      expect((await book(at(3, 13), 60, "three")).status).toBe(201);
+      expect((await book(at(3, 14, 30), 30, "four")).status).toBe(201); // 30 min gap
+      expect(await count()).toBe(4);
+    });
 
-    const bookings = await pool.query("SELECT * FROM bookings WHERE mentor_id = $1", [mentorId]);
-    expect(bookings.rows).toHaveLength(1);
+    it("is enforced by the database itself, not just the API", async () => {
+      const day = new Date(businessDays[4]);
+      const t = (h, m) => new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), h, m)).toISOString();
+      await insertRaw(t(9, 45), t(10, 15), 30);
+      await expect(insertRaw(t(10, 15), t(11, 15), 60)).rejects.toMatchObject({ code: "23P01" });
+      await expect(insertRaw(t(10, 29), t(10, 59), 30)).rejects.toMatchObject({ code: "23P01" });
+      await insertRaw(t(10, 30), t(11, 0), 30); // exactly 15 minutes after the 10:15 end
+      await insertRaw(t(9, 0), t(9, 30), 30); // exactly 15 minutes before the 09:45 start
+      expect(await count()).toBe(3);
+    });
+
+    it("the slots endpoint stops offering what the database would refuse", async () => {
+      expect((await book(at(5, 9, 45), 30, "slotcheck")).status).toBe(201);
+      const wanted = new Date(businessDays[5]).toISOString().slice(0, 10);
+      const sixty = await request(app).get(`/api/mentors/${mentorId}/slots?duration=60&days=30`);
+      const onDay = sixty.body.slots.filter((s) => s.start_time.startsWith(wanted)).map((s) => s.start_time.slice(11, 16));
+      expect(onDay).not.toContain("09:00"); // would end 10:00, inside the buffer of 09:45
+      expect(onDay).not.toContain("10:15"); // starts exactly when the booking ends
+      expect(onDay).toContain("13:00");
+    });
   });
 
-  it("rejects a booking that starts exactly when a prior booking ends (15-minute buffer)", async () => {
-    const base = new Date(Date.now() + 4 * 24 * 60 * 60 * 1000);
-    base.setUTCHours(10, 0, 0, 0);
+  describe("cancelling", () => {
+    it("cancels a future booking only for the owning email, atomically", async () => {
+      const created = await book(at(6, 9), 30, "owner");
+      expect(created.status).toBe(201);
+      const id = created.body.booking.id;
 
-    const first = await request(app)
-      .post("/api/bookings")
-      .send({ mentor_id: mentorId, start_time: base.toISOString(), duration: 60, name: "LongBooker", email: "long2@example.com" });
-    expect(first.status).toBe(201);
+      const wrong = await request(app).delete(`/api/bookings/${id}`).send({ email: "someone-else@example.com" });
+      expect(wrong.status).toBe(404);
+      expect(await count()).toBe(1);
 
-    const adjacentStart = new Date(base.getTime() + 60 * 60 * 1000).toISOString(); // 11:00, right after
-    const second = await request(app)
-      .post("/api/bookings")
-      .send({ mentor_id: mentorId, start_time: adjacentStart, duration: 30, name: "NextBooker", email: "next@example.com" });
-    expect(second.status).toBe(409);
+      const right = await request(app).delete(`/api/bookings/${id}`).send({ email: "Owner@Example.com" });
+      expect(right.status).toBe(200);
+      expect(await count()).toBe(0);
 
-    const bookings = await pool.query("SELECT * FROM bookings WHERE mentor_id = $1", [mentorId]);
-    expect(bookings.rows).toHaveLength(1);
+      expect((await request(app).delete(`/api/bookings/${id}`).send({ email: "owner@example.com" })).status).toBe(404);
+    });
+
+    it("refuses to cancel a session that has already started", async () => {
+      const started = await pool.query(
+        `INSERT INTO bookings (mentor_id, mentee_name, mentee_email, start_time, end_time, duration_minutes)
+         VALUES ($1, 'Past', 'past@example.com', now() - interval '10 minutes', now() + interval '20 minutes', 30)
+         RETURNING id`,
+        [mentorId]
+      );
+      const res = await request(app).delete(`/api/bookings/${started.rows[0].id}`).send({ email: "past@example.com" });
+      expect(res.status).toBe(409);
+      expect(await count()).toBe(1);
+    });
+  });
+
+  describe("migrations", () => {
+    it("are recorded once each and re-running changes nothing", async () => {
+      const { migrate, listMigrations } = require("../migrate");
+      const before = await pool.query("SELECT name FROM schema_migrations ORDER BY name");
+      expect(before.rows.map((r) => r.name)).toEqual(listMigrations());
+      expect(await migrate(pool)).toEqual([]);
+      const after = await pool.query("SELECT name FROM schema_migrations ORDER BY name");
+      expect(after.rows).toEqual(before.rows);
+    });
+
+    it("add CHECK constraints that reject inconsistent rows", async () => {
+      const day = new Date(businessDays[7]);
+      const t = (h, m) => new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), h, m)).toISOString();
+      await expect(insertRaw(t(9, 30), t(9, 0), 30)).rejects.toMatchObject({ code: "23514" }); // ends before it starts
+      await expect(insertRaw(t(9, 0), t(9, 50), 50)).rejects.toMatchObject({ code: "23514" }); // unsupported length
+      await expect(insertRaw(t(9, 0), t(9, 45), 30)).rejects.toMatchObject({ code: "23514" }); // length doesn't match range
+      await expect(
+        pool.query("UPDATE mentors SET allowed_durations = '{30,90}' WHERE id = $1", [mentorId])
+      ).rejects.toMatchObject({ code: "23514" });
+      expect(await count()).toBe(0);
+    });
   });
 });

@@ -1,4 +1,4 @@
-const { ALLOWED_DURATIONS } = require("./schedule");
+const { ALLOWED_DURATIONS, MAX_DAYS_AHEAD, offeredWindow, isOfferedStart } = require("./schedule");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -51,13 +51,27 @@ function validateBookingInput(body) {
   if (Number.isNaN(start.getTime())) {
     return { error: "A valid start time is required." };
   }
-  if (start.getTime() <= Date.now()) {
+  const now = new Date(Date.now());
+  if (start <= now) {
     return { error: "Pick a time in the future." };
   }
 
   const durationMinutes = typeof duration === "number" || typeof duration === "string" ? Number(duration) : NaN;
   if (!ALLOWED_DURATIONS.includes(durationMinutes)) {
     return { error: `Session length must be one of: ${ALLOWED_DURATIONS.join(", ")} minutes.` };
+  }
+
+  // The UI only offers grid slots, but the server must not rely on that: the
+  // start has to be one the slots endpoint would actually list.
+  const window = offeredWindow(now);
+  if (start < window.earliest) {
+    return { error: "Sessions can be booked from tomorrow onwards." };
+  }
+  if (start >= window.latest) {
+    return { error: `Sessions can be booked up to ${MAX_DAYS_AHEAD} days ahead.` };
+  }
+  if (!isOfferedStart(start, durationMinutes, now)) {
+    return { error: "That start time isn't available. Pick one from the list of open times." };
   }
 
   if (typeof name !== "string" || name.trim().length < 2 || name.trim().length > 100) {

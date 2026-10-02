@@ -69,17 +69,51 @@ function* gridStartsForDay(dayStart, duration) {
   }
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// [earliest, latest) window of instants the slots endpoint can offer: from the
+// start of tomorrow (UTC) through the end of the day `MAX_DAYS_AHEAD` days out.
+function offeredWindow(now) {
+  const today = new Date(now);
+  today.setUTCHours(0, 0, 0, 0);
+  return {
+    earliest: new Date(today.getTime() + DAY_MS),
+    latest: new Date(today.getTime() + (MAX_DAYS_AHEAD + 1) * DAY_MS),
+  };
+}
+
+// Every candidate session for `duration` over the next `days` days: the one
+// definition of "offerable" shared by the slots endpoint (to list them) and
+// booking validation (to refuse anything that isn't one).
+function* candidateSlots(now, days, duration) {
+  const durationMs = duration * 60 * 1000;
+  for (const day of businessDays(now, days)) {
+    for (const { start, boundary } of gridStartsForDay(day, duration)) {
+      if (start <= now) continue;
+      const end = new Date(start.getTime() + durationMs);
+      if (end > boundary) continue; // defensive — gridStartsForDay already keeps candidates within the block
+      yield { start, end };
+    }
+  }
+}
+
+function isOfferedStart(start, duration, now) {
+  const t = start.getTime();
+  for (const slot of candidateSlots(now, MAX_DAYS_AHEAD, duration)) {
+    if (slot.start.getTime() === t) return true;
+  }
+  return false;
+}
+
 module.exports = {
-  SLOT_START_HOUR,
-  MORNING_END_HOUR,
-  AFTERNOON_START_HOUR,
-  SLOT_END_HOUR,
   BUFFER_MINUTES,
   DAYS_AHEAD,
   MAX_DAYS_AHEAD,
   ALLOWED_DURATIONS,
   DEFAULT_DURATION,
-  isWeekday,
   businessDays,
   gridStartsForDay,
+  offeredWindow,
+  candidateSlots,
+  isOfferedStart,
 };
