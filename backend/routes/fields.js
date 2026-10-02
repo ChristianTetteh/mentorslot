@@ -1,10 +1,12 @@
 const express = require("express");
 const pool = require("../db");
+const asyncHandler = require("../lib/asyncHandler");
+const { parseId } = require("../lib/validation");
 
 const router = express.Router();
 
 // List all fields with a count of mentors in each, for the homepage grid.
-router.get("/", async (req, res) => {
+router.get("/", asyncHandler(async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT f.id, f.name, f.slug, f.color, COUNT(m.id)::int AS mentor_count
@@ -18,12 +20,12 @@ router.get("/", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Could not load fields." });
   }
-});
+}));
 
 // List the mentors within one field.
-router.get("/:id/mentors", async (req, res) => {
-  const fieldId = Number(req.params.id);
-  if (!Number.isInteger(fieldId) || fieldId <= 0) {
+router.get("/:id/mentors", asyncHandler(async (req, res) => {
+  const fieldId = parseId(req.params.id);
+  if (fieldId === null) {
     return res.status(400).json({ error: "Invalid field id." });
   }
 
@@ -45,6 +47,6 @@ router.get("/:id/mentors", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Could not load mentors for this field." });
   }
-});
+}));
 
 module.exports = router;

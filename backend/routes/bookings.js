@@ -1,6 +1,7 @@
 const express = require("express");
 const pool = require("../db");
-const { validateBookingInput } = require("../lib/validation");
+const asyncHandler = require("../lib/asyncHandler");
+const { validateBookingInput, parseId, normalizeEmail } = require("../lib/validation");
 
 const router = express.Router();
 
@@ -9,14 +10,14 @@ const router = express.Router();
 // at 9:00 and a 30-minute booking at 9:15 collide just as surely as two
 // identical 9:00 bookings would.
 //
-// That's enforced by a database EXCLUDE constraint (schema.sql) on
-// (mentor_id, tstzrange(start_time, end_time)): Postgres refuses to let a row
-// into the table if it overlaps an existing row for the same mentor,
-// atomically, the same way a UNIQUE constraint would. No manual transaction
+// That's enforced by a database EXCLUDE constraint (migrations/002_buffer_constraint.sql) on
+// (mentor_id, range of start_time .. end_time + 15 minutes): Postgres refuses
+// to let a row into the table if it overlaps, or sits within the 15-minute
+// buffer of, an existing row for the same mentor, atomically, the same way a UNIQUE constraint would. No manual transaction
 // or row-locking dance is needed in this handler for correctness — a plain
 // INSERT either succeeds or raises error code 23P01 ("exclusion_violation"),
 // which becomes a 409 below.
-router.post("/", async (req, res) => {
+router.post("/", asyncHandler(async (req, res) => {
   const { mentorId, start, end, durationMinutes, name, email, error } = validateBookingInput(req.body);
   if (error) {
     return res.status(400).json({ error });
@@ -57,22 +58,22 @@ router.post("/", async (req, res) => {
     });
   } catch (err) {
     if (err.code === "23P01") {
-      // Exclusion-constraint violation — this time range overlaps a booking
-      // that already exists for this mentor.
+      // Exclusion-constraint violation — this time range overlaps (or is
+      // within the buffer of) a booking that already exists for this mentor.
       return res
         .status(409)
-        .json({ error: "That time overlaps an existing booking. Please pick another." });
+        .json({ error: "That time overlaps or is too close to an existing booking. Please pick another." });
     }
     console.error(err);
     res.status(500).json({ error: "Could not create the booking." });
   }
-});
+}));
 
 // Look up bookings by email (no accounts, so email is the lookup key).
-router.get("/", async (req, res) => {
-  const email = (req.query.email || "").trim().toLowerCase();
+router.get("/", asyncHandler(async (req, res) => {
+  const email = normalizeEmail(req.query.email);
   if (!email) {
-    return res.status(400).json({ error: "An email is required to look up bookings." });
+    return res.status(400).json({ error: "A valid email is required to look up bookings." });
   }
   try {
     const result = await pool.query(
@@ -89,37 +90,51 @@ router.get("/", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Could not load bookings." });
   }
-});
+}));
 
 // Cancel a booking (must supply the same email it was booked with — the only
 // "ownership" check available without a login system). Freeing the time slot
-// needs no extra step now: availability is computed live from whatever rows
+// needs no extra step: availability is computed live from whatever rows
 // remain in `bookings`, so deleting this row is the whole operation.
-router.delete("/:id", async (req, res) => {
-  const bookingId = Number(req.params.id);
-  const email = (req.body.email || "").trim().toLowerCase();
-  if (!Number.isInteger(bookingId) || bookingId <= 0) {
+//
+// One atomic DELETE does the ownership check, the "not started yet" check and
+// the removal, so there's no select-then-delete race. A wrong email and an
+// unknown id are deliberately indistinguishable (404) so ids can't be probed.
+router.delete("/:id", asyncHandler(async (req, res) => {
+  const bookingId = parseId(req.params.id);
+  const email = normalizeEmail(req.body && req.body.email);
+  if (bookingId === null) {
     return res.status(400).json({ error: "Invalid booking id." });
   }
   if (!email) {
-    return res.status(400).json({ error: "Email is required to cancel a booking." });
+    return res.status(400).json({ error: "A valid email is required to cancel a booking." });
   }
 
   try {
-    const existing = await pool.query("SELECT mentee_email FROM bookings WHERE id = $1", [bookingId]);
-    if (existing.rows.length === 0) {
-      return res.status(404).json({ error: "Booking not found." });
-    }
-    if (existing.rows[0].mentee_email !== email) {
-      return res.status(403).json({ error: "That email doesn't match this booking." });
+    const deleted = await pool.query(
+      `DELETE FROM bookings
+       WHERE id = $1 AND lower(mentee_email) = $2 AND start_time > now()
+       RETURNING id`,
+      [bookingId, email]
+    );
+    if (deleted.rows.length === 1) {
+      return res.json({ cancelled: true });
     }
 
-    await pool.query("DELETE FROM bookings WHERE id = $1", [bookingId]);
-    res.json({ cancelled: true });
+    // Nothing deleted. Only now look (read-only) to pick the right message:
+    // the booking is either not this person's / gone, or already started.
+    const existing = await pool.query(
+      "SELECT 1 FROM bookings WHERE id = $1 AND lower(mentee_email) = $2",
+      [bookingId, email]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: "That session has already started, so it can't be cancelled." });
+    }
+    res.status(404).json({ error: "Booking not found for that email." });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Could not cancel the booking." });
   }
-});
+}));
 
 module.exports = router;

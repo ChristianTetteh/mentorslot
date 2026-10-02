@@ -103,27 +103,33 @@ describe("GET /api/bookings", () => {
 });
 
 describe("DELETE /api/bookings/:id", () => {
-  it("404s when the booking doesn't exist", async () => {
-    pool.query.mockResolvedValueOnce({ rows: [] });
+  it("404s when the booking doesn't exist or isn't this email's (indistinguishable)", async () => {
+    pool.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
 
     const res = await request(app).delete("/api/bookings/99").send({ email: "a@b.com" });
     expect(res.status).toBe(404);
   });
 
-  it("rejects cancelling someone else's booking", async () => {
-    pool.query.mockResolvedValueOnce({ rows: [{ mentee_email: "other@example.com" }] });
+  it("cancels with a single atomic DELETE scoped to id, owner email and not-yet-started", async () => {
+    pool.query.mockResolvedValueOnce({ rows: [{ id: 1 }] });
 
-    const res = await request(app).delete("/api/bookings/1").send({ email: "kwesi@example.com" });
-    expect(res.status).toBe(403);
-  });
-
-  it("cancels the booking", async () => {
-    pool.query
-      .mockResolvedValueOnce({ rows: [{ mentee_email: "kwesi@example.com" }] })
-      .mockResolvedValueOnce({ rowCount: 1 });
-
-    const res = await request(app).delete("/api/bookings/1").send({ email: "kwesi@example.com" });
+    const res = await request(app).delete("/api/bookings/1").send({ email: "Kwesi@Example.com" });
     expect(res.status).toBe(200);
     expect(res.body.cancelled).toBe(true);
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    const [sql, params] = pool.query.mock.calls[0];
+    expect(sql).toMatch(/^\s*DELETE FROM bookings/);
+    expect(sql).toMatch(/lower\(mentee_email\) = \$2/);
+    expect(sql).toMatch(/start_time > now\(\)/);
+    expect(sql).toMatch(/RETURNING/);
+    expect(params).toEqual([1, "kwesi@example.com"]);
+  });
+
+  it("409s when the session has already started", async () => {
+    pool.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ "?column?": 1 }] });
+
+    const res = await request(app).delete("/api/bookings/1").send({ email: "kwesi@example.com" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already started/);
   });
 });

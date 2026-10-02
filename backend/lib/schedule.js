@@ -10,6 +10,7 @@ const AFTERNOON_START_HOUR = 13; // afternoon block resumes at 13:00 (lunch betw
 const SLOT_END_HOUR = 17; // business day ends at 17:00
 const BUFFER_MINUTES = 15; // gap left between the end of one candidate session and the start of the next
 const DAYS_AHEAD = 14; // look this many calendar days into the future by default
+const MAX_DAYS_AHEAD = 30; // furthest the slots endpoint will look; bookings beyond it are refused
 const WEEKDAYS_ONLY = true;
 
 const ALLOWED_DURATIONS = [30, 45, 60];
@@ -75,6 +76,7 @@ module.exports = {
   SLOT_END_HOUR,
   BUFFER_MINUTES,
   DAYS_AHEAD,
+  MAX_DAYS_AHEAD,
   ALLOWED_DURATIONS,
   DEFAULT_DURATION,
   isWeekday,

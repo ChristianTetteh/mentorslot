@@ -1,11 +1,13 @@
 const express = require("express");
 const pool = require("../db");
-const { businessDays, gridStartsForDay, DAYS_AHEAD, ALLOWED_DURATIONS, DEFAULT_DURATION } = require("../lib/schedule");
+const asyncHandler = require("../lib/asyncHandler");
+const { parseId, parseIntParam } = require("../lib/validation");
+const { businessDays, gridStartsForDay, DAYS_AHEAD, MAX_DAYS_AHEAD, ALLOWED_DURATIONS, DEFAULT_DURATION } = require("../lib/schedule");
 
 const router = express.Router();
 
 // List all mentors (flat, across every field).
-router.get("/", async (req, res) => {
+router.get("/", asyncHandler(async (req, res) => {
   try {
     const result = await pool.query(
       "SELECT id, name, title, bio, color, field_id, allowed_durations FROM mentors ORDER BY name ASC"
@@ -15,24 +17,29 @@ router.get("/", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Could not load mentors." });
   }
-});
+}));
 
 // List a mentor's upcoming available start times for a given session length.
 // Availability is computed live: business-hours grid minus whatever this
 // mentor already has booked, rather than read off a pre-generated table —
 // see lib/schedule.js for why.
-router.get("/:id/slots", async (req, res) => {
-  const mentorId = Number(req.params.id);
-  if (!Number.isInteger(mentorId) || mentorId <= 0) {
+router.get("/:id/slots", asyncHandler(async (req, res) => {
+  const mentorId = parseId(req.params.id);
+  if (mentorId === null) {
     return res.status(400).json({ error: "Invalid mentor id." });
   }
 
-  const duration = Number(req.query.duration) || DEFAULT_DURATION;
-  if (!ALLOWED_DURATIONS.includes(duration)) {
+  const parsedDuration = parseIntParam(req.query.duration, { min: 1, max: 999, fallback: DEFAULT_DURATION });
+  const duration = parsedDuration.value;
+  if (parsedDuration.error || !ALLOWED_DURATIONS.includes(duration)) {
     return res.status(400).json({ error: `Session length must be one of: ${ALLOWED_DURATIONS.join(", ")} minutes.` });
   }
 
-  const days = Math.min(Number(req.query.days) || DAYS_AHEAD, 30);
+  const parsedDays = parseIntParam(req.query.days, { min: 1, max: MAX_DAYS_AHEAD, fallback: DAYS_AHEAD });
+  if (parsedDays.error) {
+    return res.status(400).json({ error: `days must be a whole number from 1 to ${MAX_DAYS_AHEAD}.` });
+  }
+  const days = parsedDays.value;
 
   try {
     const mentor = await pool.query(
@@ -84,6 +91,6 @@ router.get("/:id/slots", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Could not load slots." });
   }
-});
+}));
 
 module.exports = router;
