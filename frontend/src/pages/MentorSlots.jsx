@@ -2,7 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import axios from "axios";
 import api from "../api";
-import { groupSlotsByDay, timeRangeLabel, fullDateTimeRangeLabel } from "../utils/dates";
+import {
+  groupSlotsByDay,
+  timeLabel,
+  timeRangeLabel,
+  fullDateTimeRangeLabel,
+  longDayLabel,
+  viewerTimeZone,
+  dateParts,
+  initials,
+} from "../utils/dates";
+import { ChevronLeft, Close, Clock, Globe, Alert } from "../components/Icons.jsx";
 
 const ALL_DURATIONS = [30, 45, 60];
 const DEFAULT_DURATION = 30;
@@ -156,41 +166,79 @@ export default function MentorSlots() {
     }
   }
 
+  const timeZone = viewerTimeZone();
+
   if (loadError) {
     return (
       <div className="page">
         <div className="error-banner inline-error" role="alert">
+          <Alert />
           <p>{loadError}</p>
           <button className="btn-ghost" onClick={() => { setLoadError(""); loadSlots(DEFAULT_DURATION, { first: true }); }}>
-            Retry
+            Try again
           </button>
+          <Link to="/" className="btn-ghost">Back to fields</Link>
         </div>
       </div>
     );
   }
-  if (!mentor) return <div className="page"><p className="muted" role="status">Loading…</p></div>;
+  if (!mentor) {
+    return (
+      <div className="page" role="status" aria-label="Loading mentor">
+        <span className="sr-only">Loading…</span>
+        <div aria-hidden="true">
+          <div className="page-head mentor-head">
+            <span className="skeleton avatar avatar-lg" />
+            <div style={{ flex: 1 }}>
+              <span className="skeleton skeleton-line" style={{ width: "55%", height: 30 }} />
+              <span className="skeleton skeleton-line" style={{ width: "35%", marginTop: 10 }} />
+            </div>
+          </div>
+          <div className="slot-grid">
+            {Array.from({ length: 6 }, (_, i) => <span className="skeleton slot-skeleton" key={i} />)}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (confirmedBooking) {
+    const parts = dateParts(confirmedBooking.start_time);
     return (
-      <div className="page">
-        <div className="stamp-ticket">
-          <div className="stamp-ticket-stamp">Confirmed</div>
-          <p className="stamp-ticket-label">Your {confirmedBooking.duration_minutes}-minute session with</p>
-          <h2 className="stamp-ticket-mentor">{confirmedBooking.mentor_name}</h2>
-          <p className="stamp-ticket-when">
-            {fullDateTimeRangeLabel(confirmedBooking.start_time, confirmedBooking.end_time)}
-          </p>
-          <p className="stamp-ticket-note">
-            Booked under {confirmedBooking.mentee_email}. You can look this session up or cancel it
-            anytime from My bookings using that same email.
-          </p>
-          <p className="stamp-ticket-note">
-            This is a demo: no confirmation email is sent, so keep this screen's details.
-          </p>
-          <div className="stamp-ticket-actions">
-            <Link to="/my-bookings" className="btn-primary">View my bookings</Link>
-            <Link to="/" className="btn-ghost">Book another mentor</Link>
+      <div className="page page-narrow">
+        <div className="ticket" style={{ "--c": mentor.color }}>
+          <div className="ticket-main">
+            <div className="stamp-ticket-stamp">Confirmed</div>
+            <p className="ticket-label">Your {confirmedBooking.duration_minutes}-minute session with</p>
+            <h2 className="ticket-mentor">{confirmedBooking.mentor_name}</h2>
+            <p className="ticket-when">
+              {fullDateTimeRangeLabel(confirmedBooking.start_time, confirmedBooking.end_time)}
+            </p>
+            {timeZone && (
+              <p className="tz-note"><Globe /> Times shown in {timeZone}</p>
+            )}
           </div>
+          <div className="ticket-perf" aria-hidden="true" />
+          <div className="ticket-stub">
+            <div className="date-block" aria-hidden="true">
+              <span className="date-block-weekday">{parts.weekday}</span>
+              <span className="date-block-day">{parts.day}</span>
+              <span className="date-block-month">{parts.month}</span>
+            </div>
+            <div className="ticket-notes">
+              <p>
+                Booked under <strong className="break-word">{confirmedBooking.mentee_email}</strong>. You can look this session up or cancel it
+                anytime from My bookings using that same email.
+              </p>
+              <p className="notice">
+                This is a demo: no confirmation email is sent, so keep this screen's details.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="ticket-actions">
+          <Link to="/my-bookings" className="btn-primary">View my bookings</Link>
+          <Link to="/" className="btn-ghost">Book another mentor</Link>
         </div>
       </div>
     );
@@ -198,110 +246,159 @@ export default function MentorSlots() {
 
   return (
     <div className="page">
-      {mentor.field_id ? (
-        <Link to={`/fields/${mentor.field_id}`} className="back-link">← Back to mentors</Link>
-      ) : (
-        <Link to="/" className="back-link">← Back to fields</Link>
-      )}
-
-      <section className="mentor-header" style={{ "--mentor-color": mentor.color }}>
-        <h1>{mentor.name}</h1>
-        <p className="mentor-header-title">{mentor.title}</p>
-      </section>
-
-      <div className="duration-picker" role="group" aria-label="Session length">
-        {ALL_DURATIONS.map((d) => {
-          const offered = offeredDurations.includes(d);
-          return (
-            <button
-              key={d}
-              className={`duration-pill ${d === duration ? "is-active" : ""}`}
-              aria-pressed={d === duration}
-              onClick={() => offered && changeDuration(d)}
-              disabled={!offered}
-              title={offered ? undefined : `${mentor.name} doesn't offer ${d}-minute sessions`}
-            >
-              {d} min
-            </button>
-          );
-        })}
-      </div>
-
-      {slotNotice && <p className="error-banner" role="alert">{slotNotice}</p>}
-
-      {slotsError ? (
-        <div className="error-banner inline-error" role="alert">
-          <p>{slotsError}</p>
-          <button className="btn-ghost" onClick={() => loadSlots(duration)}>Retry</button>
+      <div className="slots-layout" style={{ "--c": mentor.color }}>
+        <div className="area-back">
+          {mentor.field_id ? (
+            <Link to={`/fields/${mentor.field_id}`} className="back-link"><ChevronLeft /> Back to mentors</Link>
+          ) : (
+            <Link to="/" className="back-link"><ChevronLeft /> Back to fields</Link>
+          )}
         </div>
-      ) : slotsLoading ? (
-        <p className="muted" role="status">Loading availability…</p>
-      ) : days.length === 0 ? (
-        <p className="muted">No open times right now for a {duration}-minute session. Check back soon or try a different length.</p>
-      ) : (
-        <>
-          <div className="day-tabs" role="group" aria-label="Day">
-            {days.map((d) => (
-              <button
-                key={d.key}
-                className={`day-tab ${d.key === currentDayKey ? "is-active" : ""}`}
-                aria-pressed={d.key === currentDayKey}
-                onClick={() => {
-                  setActiveDay(d.key);
-                  setSelectedSlot(null);
-                }}
-              >
-                {d.label}
-              </button>
-            ))}
+
+        <section className="page-head mentor-head area-head">
+          <span className="avatar avatar-lg" aria-hidden="true">{initials(mentor.name)}</span>
+          <div>
+            <h1>{mentor.name}</h1>
+            <p className="page-head-sub">{mentor.title}</p>
           </div>
+        </section>
 
-          <ul className="ledger">
-            {currentDay?.slots.map((slot) => (
-              <li key={slot.start_time} className="ledger-row">
-                <span className="ledger-time">{timeRangeLabel(slot.start_time, slot.end_time)}</span>
-                <span className="ledger-rule" aria-hidden="true" />
+        <div className="area-duration">
+          <p className="control-label" id="duration-label"><Clock /> Session length</p>
+          <div className="duration-picker" role="group" aria-label="Session length">
+            {ALL_DURATIONS.map((d) => {
+              const offered = offeredDurations.includes(d);
+              return (
                 <button
-                  className="ledger-book-btn"
-                  aria-label={`Book ${currentDay.label}, ${timeRangeLabel(slot.start_time, slot.end_time)}`}
-                  onClick={() => pickSlot(slot)}
+                  key={d}
+                  className={`duration-pill ${d === duration ? "is-active" : ""}`}
+                  aria-pressed={d === duration}
+                  onClick={() => offered && changeDuration(d)}
+                  disabled={!offered}
+                  title={offered ? undefined : `${mentor.name} doesn't offer ${d}-minute sessions`}
                 >
-                  Book
+                  {d} min
+                  {!offered && <span className="duration-pill-note">Not offered</span>}
                 </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {selectedSlot && (
-        <div className="confirm-panel" ref={panelRef} tabIndex={-1} role="region" aria-label="Confirm your booking">
-          <button className="confirm-panel-close" onClick={() => setSelectedSlot(null)} aria-label="Change time">
-            ×
-          </button>
-          <p className="confirm-panel-label">Booking a {duration}-minute session with {mentor.name}</p>
-          <p className="confirm-panel-when">{fullDateTimeRangeLabel(selectedSlot.start_time, selectedSlot.end_time)}</p>
-          <form onSubmit={confirmBooking} className="confirm-form">
-            <label>
-              Your name
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ama Serwaa" />
-            </label>
-            <label>
-              Your email
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-              />
-            </label>
-            {formError && <p className="form-error" role="alert">{formError}</p>}
-            <button className="btn-primary" type="submit" disabled={busy}>
-              {busy ? "Booking…" : "Confirm booking"}
-            </button>
-          </form>
+              );
+            })}
+          </div>
         </div>
-      )}
+
+        <div className="area-slots">
+          {slotNotice && (
+            <p className="error-banner" role="alert"><Alert /><span>{slotNotice}</span></p>
+          )}
+
+          {slotsError ? (
+            <div className="error-banner inline-error" role="alert">
+              <Alert />
+              <p>{slotsError}</p>
+              <button className="btn-ghost" onClick={() => loadSlots(duration)}>Try again</button>
+            </div>
+          ) : slotsLoading ? (
+            <div role="status" aria-label="Loading availability">
+              <span className="sr-only">Loading availability…</span>
+              <div aria-hidden="true">
+                <div className="day-tabs">
+                  {[0, 1, 2].map((i) => <span className="skeleton day-skeleton" key={i} />)}
+                </div>
+                <div className="slot-grid">
+                  {Array.from({ length: 8 }, (_, i) => <span className="skeleton slot-skeleton" key={i} />)}
+                </div>
+              </div>
+            </div>
+          ) : days.length === 0 ? (
+            <div className="empty-state">
+              <p className="empty-state-title">No open times for a {duration}-minute session.</p>
+              <p className="muted">
+                {offeredDurations.length > 1
+                  ? "Try a different session length, or check back soon."
+                  : "Check back soon, or browse other mentors."}
+              </p>
+              <Link to={mentor.field_id ? `/fields/${mentor.field_id}` : "/"} className="btn-ghost">
+                Browse other mentors
+              </Link>
+            </div>
+          ) : (
+            <>
+              <div className="slots-head">
+                <p className="control-label">Pick a day</p>
+                {timeZone && <p className="tz-note"><Globe /> Times in {timeZone}</p>}
+              </div>
+              <div className="day-tabs" role="group" aria-label="Day">
+                {days.map((d) => (
+                  <button
+                    key={d.key}
+                    className={`day-tab ${d.key === currentDayKey ? "is-active" : ""}`}
+                    aria-pressed={d.key === currentDayKey}
+                    onClick={() => {
+                      setActiveDay(d.key);
+                      setSelectedSlot(null);
+                    }}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+
+              <h2 className="slots-day-heading">
+                {longDayLabel(currentDay.slots[0].start_time)}
+                <span className="slots-day-count">
+                  {currentDay.slots.length} open {currentDay.slots.length === 1 ? "time" : "times"}
+                </span>
+              </h2>
+
+              <ul className="slot-grid">
+                {currentDay?.slots.map((slot) => (
+                  <li key={slot.start_time}>
+                    <button
+                      className={`slot ${selectedSlot?.start_time === slot.start_time ? "is-selected" : ""}`}
+                      aria-label={`Book ${currentDay.label}, ${timeRangeLabel(slot.start_time, slot.end_time)}`}
+                      aria-pressed={selectedSlot?.start_time === slot.start_time}
+                      onClick={() => pickSlot(slot)}
+                    >
+                      <span className="slot-start">{timeLabel(slot.start_time)}</span>
+                      <span className="slot-end">to {timeLabel(slot.end_time)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+
+        {selectedSlot && (
+          <div className="confirm-panel area-panel" ref={panelRef} tabIndex={-1} role="region" aria-label="Confirm your booking">
+            <button className="confirm-panel-close" onClick={() => setSelectedSlot(null)} aria-label="Change time">
+              <Close />
+            </button>
+            <p className="confirm-panel-label">{duration}-minute session with {mentor.name}</p>
+            <p className="confirm-panel-when">{fullDateTimeRangeLabel(selectedSlot.start_time, selectedSlot.end_time)}</p>
+            {timeZone && <p className="tz-note"><Globe /> {timeZone}</p>}
+            <form onSubmit={confirmBooking} className="confirm-form">
+              <label>
+                Your name
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ama Serwaa" autoComplete="name" />
+              </label>
+              <label>
+                Your email
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                />
+              </label>
+              {formError && <p className="form-error" role="alert"><Alert /> {formError}</p>}
+              <button className="btn-primary btn-block" type="submit" disabled={busy}>
+                {busy ? "Booking…" : "Confirm booking"}
+              </button>
+            </form>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
