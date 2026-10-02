@@ -32,25 +32,41 @@ const expectJsonError = (res, status) => {
   expect(JSON.stringify(res.body)).not.toMatch(/at .*\.js|<html|stack/i);
 };
 
-describe("non-string email input", () => {
-  it("GET /bookings?email[]=a&email[]=b is a 400, not a crash", async () => {
-    const res = await request(app).get("/api/bookings?email[]=a&email[]=b");
-    expectJsonError(res, 400);
+describe("non-string token / email input", () => {
+  it.each([[123], [["a.b"]], [{ a: 1 }], [null], [true], [""]])("POST /manage/view with token %j is a 400, not a crash", async (token) => {
+    expectJsonError(await request(app).post("/api/manage/view").send({ token }), 400);
     expect(pool.query).not.toHaveBeenCalled();
   });
 
-  it("GET /bookings?email[x]=1 (object) is a 400", async () => {
-    expectJsonError(await request(app).get("/api/bookings?email[x]=1"), 400);
-  });
-
-  it.each([[123], [["a@b.com"]], [{ a: 1 }], [null], [true]])("DELETE with body email %j is a 400", async (email) => {
-    const res = await request(app).delete("/api/bookings/1").send({ email });
-    expectJsonError(res, 400);
+  it.each([[123], [["a.b"]], [{ a: 1 }], [null], [true]])("POST /manage/cancel with token %j is a 400", async (token) => {
+    expectJsonError(await request(app).post("/api/manage/cancel").send({ token }), 400);
     expect(pool.query).not.toHaveBeenCalled();
   });
 
-  it("DELETE with no body is a 400", async () => {
-    expectJsonError(await request(app).delete("/api/bookings/1"), 400);
+  it("manage endpoints with no body, a non-object body or no token are a 400", async () => {
+    for (const path of ["/api/manage/view", "/api/manage/cancel"]) {
+      expectJsonError(await request(app).post(path), 400);
+      expectJsonError(await request(app).post(path).send({}), 400);
+      expectJsonError(await request(app).post(path).set("Content-Type", "application/json").send("[1,2]"), 400);
+      expectJsonError(await request(app).post(path).set("Content-Type", "application/json").send('"str"'), 400);
+      // Query-string tokens are never read.
+      expectJsonError(await request(app).post(`${path}?token=1.abc`), 400);
+    }
+    expect(pool.query).not.toHaveBeenCalled();
+  });
+
+  it.each([[123], [["a@b.com"]], [{ a: 1 }], [null], [true], [""], ["not-an-email"]])(
+    "POST /bookings/lookup with email %j is a 400 and sends nothing",
+    async (email) => {
+      const res = await request(app).post("/api/bookings/lookup").set("X-Forwarded-For", "192.0.2.77").send({ email });
+      expectJsonError(res, 400);
+      expect(pool.query).not.toHaveBeenCalled();
+    }
+  );
+
+  it("POST /bookings/lookup with no body is a 400", async () => {
+    const res = await request(app).post("/api/bookings/lookup").set("X-Forwarded-For", "192.0.2.78");
+    expectJsonError(res, 400);
   });
 
   it("POST with non-string name/email/start_time fields is a 400", async () => {
@@ -122,7 +138,6 @@ describe("id and numeric parameter bounds", () => {
       for (const res of [
         await request(app).get(`/api/fields/${id}/mentors`),
         await request(app).get(`/api/mentors/${id}/slots`),
-        await request(app).delete(`/api/bookings/${id}`).send({ email: "a@b.com" }),
       ]) {
         expectJsonError(res, 400);
       }

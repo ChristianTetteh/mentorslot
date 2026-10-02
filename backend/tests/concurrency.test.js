@@ -19,6 +19,7 @@ describeIfDb("booking rules against real Postgres", () => {
   let request;
   let mentorId;
   let businessDays;
+  let createManageToken;
 
   // HH:MM UTC on the Nth upcoming bookable weekday — always a real grid day
   // inside the horizon, whatever today's date is.
@@ -40,6 +41,8 @@ describeIfDb("booking rules against real Postgres", () => {
     );
 
   beforeAll(async () => {
+    // No mail provider here: keep the dev "would have sent" console output out of the test log.
+    jest.spyOn(console, "log").mockImplementation(() => {});
     process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
     process.env.PGSSL = process.env.TEST_PGSSL || "false";
     process.env.NODE_ENV = "test";
@@ -64,6 +67,7 @@ describeIfDb("booking rules against real Postgres", () => {
     // Fresh require so the app picks up the env vars set above.
     jest.resetModules();
     app = require("../server");
+    createManageToken = require("../lib/manageToken").createManageToken;
     businessDays = require("../lib/schedule").businessDays(new Date(), 30);
   });
 
@@ -139,32 +143,75 @@ describeIfDb("booking rules against real Postgres", () => {
     });
   });
 
-  describe("cancelling", () => {
-    it("cancels a future booking only for the owning email, atomically", async () => {
+  describe("cancelling with a private manage link", () => {
+    const manage = (action, token) => request(app).post(`/api/manage/${action}`).send({ token });
+
+    it("books, views and cancels with the token returned at booking time, atomically", async () => {
       const created = await book(at(6, 9), 30, "owner");
       expect(created.status).toBe(201);
-      const id = created.body.booking.id;
+      const { manage_token: token, booking } = created.body;
+      expect(token).toMatch(new RegExp(`^${booking.id}\\.[A-Za-z0-9_-]{43}$`));
 
-      const wrong = await request(app).delete(`/api/bookings/${id}`).send({ email: "someone-else@example.com" });
-      expect(wrong.status).toBe(404);
+      const view = await manage("view", token);
+      expect(view.status).toBe(200);
+      expect(view.body.booking).toMatchObject({
+        status: "upcoming",
+        duration_minutes: 30,
+        mentee_first_name: "Test",
+        mentee_email_masked: "o***@example.com",
+      });
+
+      // A forged token (right id, wrong mac) and another booking's token do nothing.
+      const mac = token.split(".")[1];
+      const forged = `${booking.id}.${(mac[0] === "A" ? "B" : "A") + mac.slice(1)}`;
+      expect((await manage("cancel", forged)).status).toBe(404);
       expect(await count()).toBe(1);
 
-      const right = await request(app).delete(`/api/bookings/${id}`).send({ email: "Owner@Example.com" });
-      expect(right.status).toBe(200);
+      expect((await manage("cancel", token)).status).toBe(200);
       expect(await count()).toBe(0);
 
-      expect((await request(app).delete(`/api/bookings/${id}`).send({ email: "owner@example.com" })).status).toBe(404);
+      // Idempotent-safe: the second cancel (and a view) are the same generic 404.
+      const again = await manage("cancel", token);
+      expect(again.status).toBe(404);
+      expect(again.body).toEqual({ error: "Booking not found." });
+      expect((await manage("view", token)).status).toBe(404);
     });
 
-    it("refuses to cancel a session that has already started", async () => {
+    it("frees the time for someone else once cancelled", async () => {
+      const first = await book(at(6, 13), 30, "first");
+      expect((await book(at(6, 13), 30, "second")).status).toBe(409);
+      expect((await manage("cancel", first.body.manage_token)).status).toBe(200);
+      expect((await book(at(6, 13), 30, "second")).status).toBe(201);
+    });
+
+    it("two simultaneous cancels: exactly one succeeds, the other is a 404", async () => {
+      const created = await book(at(6, 14, 30), 30, "racer");
+      const results = await Promise.all([1, 2, 3, 4].map(() => manage("cancel", created.body.manage_token)));
+      expect(results.filter((r) => r.status === 200)).toHaveLength(1);
+      expect(results.filter((r) => r.status === 404)).toHaveLength(3);
+    });
+
+    it("refuses to cancel a session that has already started (409) and shows it as started", async () => {
       const started = await pool.query(
         `INSERT INTO bookings (mentor_id, mentee_name, mentee_email, start_time, end_time, duration_minutes)
          VALUES ($1, 'Past', 'past@example.com', now() - interval '10 minutes', now() + interval '20 minutes', 30)
          RETURNING id`,
         [mentorId]
       );
-      const res = await request(app).delete(`/api/bookings/${started.rows[0].id}`).send({ email: "past@example.com" });
+      const token = createManageToken(started.rows[0].id);
+      expect((await manage("view", token)).body.booking.status).toBe("started");
+      const res = await manage("cancel", token);
       expect(res.status).toBe(409);
+      expect(await count()).toBe(1);
+
+      await pool.query("UPDATE bookings SET end_time = now() - interval '1 minute', start_time = now() - interval '31 minutes' WHERE id = $1", [started.rows[0].id]);
+      expect((await manage("view", token)).body.booking.status).toBe("past");
+    });
+
+    it("the old email-based routes are gone", async () => {
+      const created = await book(at(6, 9), 30, "legacy");
+      expect((await request(app).get("/api/bookings?email=legacy@example.com")).status).toBe(404);
+      expect((await request(app).delete(`/api/bookings/${created.body.booking.id}`).send({ email: "legacy@example.com" })).status).toBe(404);
       expect(await count()).toBe(1);
     });
   });
