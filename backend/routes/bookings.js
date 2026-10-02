@@ -1,9 +1,14 @@
 const express = require("express");
 const pool = require("../db");
 const asyncHandler = require("../lib/asyncHandler");
-const { validateBookingInput, parseId, normalizeEmail } = require("../lib/validation");
+const { validateBookingInput, normalizeEmail } = require("../lib/validation");
+const mailer = require("../lib/mailer");
+const { createManageToken } = require("../lib/manageToken");
+const { confirmationEmail, linksEmail, manageLink } = require("../lib/emails");
+const { runInBackground } = require("../lib/background");
+const { lookupEmailLimiter, confirmEmailLimiter } = require("../lib/mailLimits");
 
-const router = express.Router();
+const router = express.Router({ caseSensitive: true, strict: true });
 
 // Book a session. This is the core "prevent double-booking" guarantee, and it
 // now covers *overlap*, not just "the exact same slot" — a 60-minute booking
@@ -42,7 +47,22 @@ router.post("/", asyncHandler(async (req, res) => {
       [mentorId, name, email, start.toISOString(), end.toISOString(), durationMinutes]
     );
 
+    const created = booking.rows[0];
+    const mentorRow = mentor.rows[0];
+
+    // The private manage link: shown to the booker once, here, and emailed.
+    // It is recomputed from the booking id and the server secret whenever it
+    // is needed again, so nothing about it is stored.
+    const manageToken = createManageToken(created.id);
+    const link = manageLink(created.id);
+    // A confirmation goes to whatever address was typed, so cap how many one
+    // address can receive per hour (the booking itself is never affected).
+    const attemptEmail = link !== null && confirmEmailLimiter.take(email);
+    const emailed = attemptEmail && mailer.isConfigured();
+
     res.status(201).json({
+      manage_token: manageToken,
+      emailed,
       booking: {
         id: booking.rows[0].id,
         mentor_id: mentorId,
@@ -56,6 +76,19 @@ router.post("/", asyncHandler(async (req, res) => {
         created_at: booking.rows[0].created_at,
       },
     });
+
+    // After the response, and never able to fail the booking: sendMail
+    // resolves rather than throws, and runInBackground catches anything else.
+    if (attemptEmail) {
+      runInBackground(() => {
+        const message = confirmationEmail({
+          booking: { start_time: created.start_time, end_time: created.end_time, duration_minutes: created.duration_minutes },
+          mentor: mentorRow,
+          link,
+        });
+        return mailer.sendMail({ to: email, ...message });
+      });
+    }
   } catch (err) {
     if (err.code === "23P01") {
       // Exclusion-constraint violation — this time range overlaps (or is
@@ -69,72 +102,57 @@ router.post("/", asyncHandler(async (req, res) => {
   }
 }));
 
-// Look up bookings by email (no accounts, so email is the lookup key).
-router.get("/", asyncHandler(async (req, res) => {
-  const email = normalizeEmail(req.query.email);
+const LOOKUP_MESSAGE = "If we have upcoming bookings for that email, we've sent the links.";
+const MAX_LINKS_PER_EMAIL = 25;
+
+// "Email me my links". The reply is identical whether or not the address has
+// bookings, so this can't be used to find out who has booked. The lookup and
+// the send happen after the response is out, so timing doesn't differ either.
+// (Whether email is configured at all is server config, not account data.)
+router.post("/lookup", asyncHandler(async (req, res) => {
+  const email = normalizeEmail(req.body && req.body.email);
   if (!email) {
-    return res.status(400).json({ error: "A valid email is required to look up bookings." });
+    return res.status(400).json({ error: "A valid email is required." });
   }
-  try {
+  if (!mailer.isConfigured()) {
+    return res.status(503).json({
+      error: "Email isn't set up on this server yet, so links can't be sent. Use the private link shown when you booked.",
+    });
+  }
+
+  // Over the per-address budget: say exactly what we always say, send nothing.
+  const allowed = lookupEmailLimiter.take(email);
+  res.json({ message: LOOKUP_MESSAGE });
+  if (!allowed) return;
+
+  runInBackground(async () => {
     const result = await pool.query(
-      `SELECT b.id, b.mentee_name, b.mentee_email, b.start_time, b.end_time, b.duration_minutes, b.created_at,
-              m.id AS mentor_id, m.name AS mentor_name, m.title AS mentor_title, m.color
+      `SELECT b.id, b.start_time, b.end_time, b.duration_minutes, m.name AS mentor_name, m.title AS mentor_title
        FROM bookings b
        JOIN mentors m ON m.id = b.mentor_id
-       WHERE b.mentee_email = $1
-       ORDER BY b.start_time ASC`,
+       WHERE b.mentee_email = $1 AND b.start_time > now()
+       ORDER BY b.start_time ASC
+       LIMIT ${MAX_LINKS_PER_EMAIL}`,
       [email]
     );
-    res.json({ bookings: result.rows });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Could not load bookings." });
-  }
-}));
+    if (result.rows.length === 0) return;
 
-// Cancel a booking (must supply the same email it was booked with — the only
-// "ownership" check available without a login system). Freeing the time slot
-// needs no extra step: availability is computed live from whatever rows
-// remain in `bookings`, so deleting this row is the whole operation.
-//
-// One atomic DELETE does the ownership check, the "not started yet" check and
-// the removal, so there's no select-then-delete race. A wrong email and an
-// unknown id are deliberately indistinguishable (404) so ids can't be probed.
-router.delete("/:id", asyncHandler(async (req, res) => {
-  const bookingId = parseId(req.params.id);
-  const email = normalizeEmail(req.body && req.body.email);
-  if (bookingId === null) {
-    return res.status(400).json({ error: "Invalid booking id." });
-  }
-  if (!email) {
-    return res.status(400).json({ error: "A valid email is required to cancel a booking." });
-  }
-
-  try {
-    const deleted = await pool.query(
-      `DELETE FROM bookings
-       WHERE id = $1 AND lower(mentee_email) = $2 AND start_time > now()
-       RETURNING id`,
-      [bookingId, email]
-    );
-    if (deleted.rows.length === 1) {
-      return res.json({ cancelled: true });
+    const items = [];
+    for (const row of result.rows) {
+      const link = manageLink(row.id);
+      if (!link) {
+        console.error("Cannot build manage links: no frontend origin is configured.");
+        return;
+      }
+      items.push({
+        booking: { start_time: row.start_time, end_time: row.end_time, duration_minutes: row.duration_minutes },
+        mentor: { name: row.mentor_name, title: row.mentor_title },
+        link,
+      });
     }
-
-    // Nothing deleted. Only now look (read-only) to pick the right message:
-    // the booking is either not this person's / gone, or already started.
-    const existing = await pool.query(
-      "SELECT 1 FROM bookings WHERE id = $1 AND lower(mentee_email) = $2",
-      [bookingId, email]
-    );
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: "That session has already started, so it can't be cancelled." });
-    }
-    res.status(404).json({ error: "Booking not found for that email." });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Could not cancel the booking." });
-  }
+    await mailer.sendMail({ to: email, ...linksEmail(items) });
+  });
 }));
 
 module.exports = router;
+module.exports.LOOKUP_MESSAGE = LOOKUP_MESSAGE;

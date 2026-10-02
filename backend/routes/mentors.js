@@ -11,7 +11,7 @@ const {
   DEFAULT_DURATION,
 } = require("../lib/schedule");
 
-const router = express.Router();
+const router = express.Router({ caseSensitive: true, strict: true });
 
 // List all mentors (flat, across every field).
 router.get("/", asyncHandler(async (req, res) => {

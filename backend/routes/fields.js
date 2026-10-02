@@ -3,7 +3,7 @@ const pool = require("../db");
 const asyncHandler = require("../lib/asyncHandler");
 const { parseId } = require("../lib/validation");
 
-const router = express.Router();
+const router = express.Router({ caseSensitive: true, strict: true });
 
 // List all fields with a count of mentors in each, for the homepage grid.
 router.get("/", asyncHandler(async (req, res) => {
