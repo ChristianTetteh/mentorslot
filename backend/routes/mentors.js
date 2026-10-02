@@ -20,7 +20,7 @@ router.get("/", async (req, res) => {
 // List a mentor's upcoming available start times for a given session length.
 // Availability is computed live: business-hours grid minus whatever this
 // mentor already has booked, rather than read off a pre-generated table —
-// see lib/schedule.js and schema.sql for why.
+// see lib/schedule.js for why.
 router.get("/:id/slots", async (req, res) => {
   const mentorId = Number(req.params.id);
   if (!Number.isInteger(mentorId) || mentorId <= 0) {

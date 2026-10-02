@@ -1,5 +1,5 @@
 // Business-hours grid for mentor availability. There is no longer a
-// pre-generated table of bookable slots (see schema.sql) — availability for
+// pre-generated table of bookable slots (see migrations/001_initial.sql) — availability for
 // a given duration is computed on request as "candidate grid starts minus
 // whatever's already booked" (routes/mentors.js). This module only produces
 // the candidate grid; it has no opinion about what's already taken.

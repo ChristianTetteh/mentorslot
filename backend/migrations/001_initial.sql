@@ -1,4 +1,8 @@
--- MentorSlot schema. Safe to re-run (idempotent).
+-- MentorSlot initial schema (migration 001).
+--
+-- Written in CREATE ... IF NOT EXISTS style with no DROPs, so applying it to a
+-- database that already has this schema (the original deployment, created by
+-- the old schema.sql) changes nothing. It never removes tables, columns or rows.
 
 -- Needed for the EXCLUDE constraint below: lets a GiST index enforce equality
 -- (mentor_id) alongside a range-overlap check in the same constraint.
@@ -36,15 +40,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_mentors_name ON mentors (name);
 -- convention (seed.js enforces this) so there's always a default that works.
 ALTER TABLE mentors ADD COLUMN IF NOT EXISTS allowed_durations SMALLINT[] NOT NULL DEFAULT '{30}';
 
--- Availability is no longer a pre-generated table of fixed-length slots.
--- Variable session lengths (30/45/60 min) mean "is this mentor free at this
--- moment" has to be answered against arbitrary time ranges, not fixed-width
--- rows, so it's computed on request (see routes/mentors.js) from business
--- hours minus this table's existing rows. The `slots` table from the first
--- release is dropped as part of that move — nothing reads or writes it
--- anymore, and no booking data is lost (it only ever mirrored `bookings`,
--- which is preserved below).
-DROP TABLE IF EXISTS slots CASCADE;
+-- Availability is not stored: variable session lengths (30/45/60 min) mean "is
+-- this mentor free" is computed on request (routes/mentors.js) from business
+-- hours minus this table's rows.
 
 CREATE TABLE IF NOT EXISTS bookings (
   id SERIAL PRIMARY KEY,
@@ -56,15 +54,6 @@ CREATE TABLE IF NOT EXISTS bookings (
   duration_minutes SMALLINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- Migrating an existing deployment: the old `bookings` table had a `slot_id`
--- column (now meaningless, since `slots` is gone) and no start/end/duration
--- columns at all. Add what's missing; this is safe to run against an empty
--- table (true for every deployment of this app so far) or re-run as a no-op.
-ALTER TABLE bookings DROP COLUMN IF EXISTS slot_id;
-ALTER TABLE bookings ADD COLUMN IF NOT EXISTS start_time TIMESTAMPTZ NOT NULL;
-ALTER TABLE bookings ADD COLUMN IF NOT EXISTS end_time TIMESTAMPTZ NOT NULL;
-ALTER TABLE bookings ADD COLUMN IF NOT EXISTS duration_minutes SMALLINT NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_bookings_email ON bookings (mentee_email);
 CREATE INDEX IF NOT EXISTS idx_bookings_mentor_time ON bookings (mentor_id, start_time);
