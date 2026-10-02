@@ -16,16 +16,19 @@ export default function Header() {
             <circle cx="9.5" cy="23.5" r="1.6" fill="currentColor" />
           </svg>
         </span>
-        MentorSlot
+        <span className="brand-name-text-wrap">MentorSlot</span>
       </Link>
-      <nav className="site-nav">
+      <nav className="site-nav" aria-label="Main">
         <Link
           to="/"
           className={location.pathname === "/" || location.pathname.startsWith("/fields") ? "is-active" : ""}
+          aria-current={location.pathname === "/" || location.pathname.startsWith("/fields") ? "page" : undefined}
         >
           Browse fields
         </Link>
-        <Link to="/my-bookings" className={location.pathname === "/my-bookings" ? "is-active" : ""}>
+        <Link to="/my-bookings" className={location.pathname === "/my-bookings" ? "is-active" : ""}
+          aria-current={location.pathname === "/my-bookings" ? "page" : undefined}
+        >
           My bookings
         </Link>
       </nav>

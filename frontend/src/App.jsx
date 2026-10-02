@@ -8,8 +8,9 @@ import MyBookings from "./pages/MyBookings.jsx";
 export default function App() {
   return (
     <div className="app">
+      <a className="skip-link" href="#main">Skip to content</a>
       <Header />
-      <main className="app-main">
+      <main className="app-main" id="main">
         <Routes>
           <Route path="/" element={<FieldList />} />
           <Route path="/fields/:fieldId" element={<MentorList />} />
