@@ -28,15 +28,17 @@ task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a 
 - **No account needed** — booking only asks for a name and email; "my bookings" are looked
   up by email, no login/password anywhere
 - **Cancel + rebook** — cancelling a booking frees the time so someone else (or the same
-  person) can take it
+  person) can take it; a session that has already started can't be cancelled
 - **Real concurrency test, not a mocked one** — a Jest suite fires 5 simultaneous booking
   requests at the same time against a real local Postgres instance and asserts exactly one
   wins, plus a dedicated test proving a 30-minute booking can't be squeezed into the middle
   of someone else's 60-minute session (see [Testing](#testing))
-- **Rate limiting + security headers** — Helmet, and a dedicated rate limit on the booking
-  endpoint to blunt scripted slot-grabbing
-- **Self-seeding demo data** — every boot re-runs an idempotent seed script, so the live
-  demo always has fresh future slots across the next two weeks without manual upkeep
+- **Rate limiting + security headers** — Helmet, a dedicated rate limit on the booking
+  endpoint to blunt scripted slot-grabbing, and a separate one on the by-email lookup/cancel
+  endpoints
+- **Self-seeding demo data** — every boot applies any pending migrations and re-runs an
+  idempotent (upsert-only) seed script, so the live demo always has its fields and mentors,
+  and fresh future slots across the next two weeks, without manual upkeep or data loss
 - **Full calendar days of lead time, not a sliding window** — available slots are computed
   against the end of day N, not `now() + N*24h`, so a request made late in the day can't
   silently clip the last visible day's morning slots (an easy mistake with the obvious
@@ -68,39 +70,49 @@ guard.
 Variable session lengths mean two bookings can collide without being for the *identical*
 time — a 60-minute booking at 9:00 and a 30-minute booking at 9:15 overlap just as surely as
 two bookings for the exact same slot would. A fixed-slot `UNIQUE` constraint can't express
-that, so the guarantee lives in a single Postgres **`EXCLUDE` constraint** instead:
+that, so the guarantee lives in a single Postgres **`EXCLUDE` constraint** instead (see
+`backend/migrations/002_buffer_constraint.sql`):
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
+-- start .. end + 15 minutes (an IMMUTABLE wrapper so it can be indexed)
 ALTER TABLE bookings
-  ADD CONSTRAINT no_overlapping_bookings
-  EXCLUDE USING gist (mentor_id WITH =, tstzrange(start_time, end_time) WITH &&);
+  ADD CONSTRAINT no_overlapping_bookings_buffered
+  EXCLUDE USING gist (mentor_id WITH =, booking_blocked_range(start_time, end_time) WITH &&);
 ```
 
 This tells Postgres: for a given `mentor_id`, no two rows may have overlapping
-`[start_time, end_time)` ranges — enforced atomically on every `INSERT`, the same way a
-`UNIQUE` constraint is, with no manual transaction or row-locking needed in the API code. A
-plain `INSERT INTO bookings (...)` either succeeds or raises error code `23P01`
-(`exclusion_violation`), which the API catches and turns into a `409`.
+`[start_time, end_time + 15 minutes)` ranges. That is both the no-overlap rule and a
+**15-minute minimum gap between a mentor's sessions, whatever the mix of lengths** (a
+09:45–10:15 session followed by 10:15–11:15 is refused; 09:45–10:15 followed by 10:30 is
+fine). It is enforced atomically on every `INSERT`, the same way a `UNIQUE` constraint is,
+with no manual transaction or row-locking needed in the API code. A violation raises error
+code `23P01` (`exclusion_violation`), which the API turns into a `409`.
 
-Available slots are also computed *live* on each request (business-hours grid minus that
-mentor's existing bookings for the requested duration) rather than read off a pre-generated
+The server also enforces its own scheduling rules rather than trusting the UI:
+`POST /api/bookings` only accepts a start time the slots endpoint would actually list for
+that duration — a weekday, inside business hours (09:00–12:00 and 13:00–17:00 UTC), on the
+duration-specific grid, from tomorrow through 30 days ahead. Anything else is a `400`. Both
+the slots endpoint and booking validation use the same `candidateSlots()` in
+`backend/lib/schedule.js`.
+
+Available slots are computed *live* on each request (the business-hours grid minus that
+mentor's existing bookings, each padded by the buffer) rather than read off a pre-generated
 table, since a fixed-granularity slot table can't cleanly represent 30/45/60-minute
-availability at once — see `backend/lib/schedule.js` and `backend/routes/mentors.js`. The
-grid itself is spaced by the requested duration plus a 15-minute buffer (not a flat
-half-hour grid independent of duration), so a 45-minute candidate at 9:00-9:45 is followed
-by one at 10:00-10:45, not an overlapping 9:30-10:15 — every mentor gets a breather between
-sessions, and the list never shows two candidates that couldn't both be booked anyway. That
-read path is a convenience for not offering slots that would obviously conflict; the actual
-guarantee against bad data ever landing in the table is the `EXCLUDE` constraint above.
+availability at once. The grid is spaced by the requested duration plus the 15-minute buffer,
+so a 45-minute candidate at 9:00–9:45 is followed by one at 10:00–10:45, not an overlapping
+9:30–10:15. That read path is a convenience for not offering slots that would obviously
+conflict; the actual guarantee against bad data landing in the table is the database
+constraint above.
 
-This is proven, not just asserted: `tests/concurrency.test.js` opens a real Postgres
+This is proven, not just asserted: `tests/concurrency.test.js` uses a real Postgres
 connection and (1) fires 5 simultaneous booking requests at the identical time and asserts
-exactly 1 succeeds and 4 get `409`, (2) books a 60-minute session and then attempts a
-30-minute booking starting 15 minutes into it, asserting that also gets `409`, and (3) books
-a 30-minute session starting exactly when a prior 60-minute session ends and asserts that
-succeeds (adjacent, non-overlapping bookings are fine) — see [Testing](#testing).
+exactly 1 succeeds and 4 get `409`, (2) books a 60-minute session and attempts a 30-minute
+booking inside it (`409`), (3) checks the buffer in both orders (30-minute 09:45–10:15 then a
+60-minute 10:15 start is `409`; exactly 15 minutes apart is fine), directly against the
+database as well as through the API, and (4) checks cancel and the migrations — see
+[Testing](#testing).
 
 ## 1. Set up the database
 
@@ -112,7 +124,7 @@ cd backend
 cp .env.example .env
 # edit .env: set DATABASE_URL
 npm install
-npm run migrate   # creates fields, mentors, bookings tables + the overlap-prevention constraint (safe to re-run; idempotent)
+npm run migrate   # applies any pending migrations/NNN_*.sql, each once, in a transaction (safe to re-run; never drops data)
 npm run seed      # upserts the 10 fields and 32 mentors (availability is computed live, not pre-seeded)
 ```
 
@@ -127,13 +139,15 @@ npm run dev        # http://localhost:4001
 
 ```bash
 cd frontend
-cp .env.example .env   # VITE_API_URL, defaults to http://localhost:4001/api
 npm install
 npm run dev         # http://localhost:5173
 ```
 
-Vite's dev server proxies `/api` to `http://localhost:4001` automatically, so the two
-`.env` files only really matter once you deploy.
+Locally you don't need a frontend `.env`: with `VITE_API_URL` unset the app calls `/api`, and
+Vite's dev server proxies that to `http://localhost:4001`. `frontend/.env.example` shows the
+variable you set when deploying (`VITE_API_URL`). If you copy it to `frontend/.env` locally,
+the browser calls that URL directly instead of using the proxy, so the backend's
+`CORS_ORIGIN` must match the frontend's origin (`http://localhost:5173`).
 
 ## Testing
 
@@ -142,22 +156,25 @@ cd backend
 npm test
 ```
 
-Runs the offline suite (mocked database, no live Postgres or network needed): input
-validation (including the three allowed session lengths), the mentors/slots routes (including
-duration filtering and a mentor-doesn't-offer-this-length rejection), and the bookings routes
-(successful booking, the exclusion-constraint double-booking path, lookup by email, and
-cancel with ownership-by-email checks).
+Runs every suite that doesn't need a database (the database module is mocked, a fixed fake
+clock replaces the real date, and no network is used): `validation.test.js` (input rules,
+including the server-side grid/horizon checks), `schedule.test.js` (grid math), `fields.test.js`
+(the fields routes), `mentors.test.js` (the slots route, duration filtering, buffer padding),
+`bookings.test.js` (create, lookup, atomic cancel), `robustness.test.js` (malformed input, bad
+ids/params, error handling), `ratelimit.test.js` (limits, CORS origin handling) and
+`migrations.test.js` (migration file hygiene).
 
-The concurrency proof needs a real database and is skipped by default:
+**Only `tests/concurrency.test.js` needs Postgres** (it is skipped by `npm test`). Point it at
+a scratch database; it applies the migrations itself:
 
 ```bash
 TEST_DATABASE_URL="postgresql://user:pass@localhost:5432/mentorslot_test" npm run test:concurrency
 ```
 
-This spins up one mentor and proves the `EXCLUDE` constraint three ways — 5 simultaneous
-identical-time bookings (exactly 1 wins), a 30-minute booking that starts partway through an
-existing 60-minute booking (rejected), and a 30-minute booking that starts exactly when a
-prior 60-minute booking ends (allowed) — a real proof of the guard in
+It proves the `EXCLUDE` constraint against a real database — 5 simultaneous identical-time
+bookings (exactly 1 wins), overlap across different durations, the 15-minute buffer in both
+orders (through the API and with raw SQL), real cancel behaviour, idempotent migrations and the
+`CHECK` constraints — a real proof of the guard in
 [Preventing double-booking](#preventing-double-booking), not a mocked stand-in for one.
 
 ## API overview
@@ -166,13 +183,15 @@ prior 60-minute booking ends (allowed) — a real proof of the guard in
 |--------|-------|-------------|
 | GET    | `/api/fields` | List fields with a mentor count for each |
 | GET    | `/api/fields/:id/mentors` | A field + its mentors |
-| GET    | `/api/mentors` | List all mentors (flat, across every field), each with its `allowed_durations` |
-| GET    | `/api/mentors/:id/slots?duration=&days=` | A mentor + their available future slots for a given session length (`duration` defaults to 30; must be one the mentor offers) |
-| POST   | `/api/bookings` | Book a session `{ mentor_id, start_time, duration, name, email }` — `400` if the mentor doesn't offer that duration, `409` if the time overlaps an existing booking |
+| GET    | `/api/mentors` | List all mentors (flat, across every field), each with its `allowed_durations` (not used by this frontend; kept as part of the public API) |
+| GET    | `/api/mentors/:id/slots?duration=&days=` | A mentor + their available future slots for a given session length (`duration` defaults to 30 and must be one the mentor offers; `days` is a whole number 1–30, default 14) |
+| POST   | `/api/bookings` | Book a session `{ mentor_id, start_time, duration, name, email }`. `start_time` is ISO 8601 **with** a timezone offset and must be a slot the slots endpoint offers (`400` otherwise, or if the mentor doesn't offer that duration); `409` if it overlaps, or is within 15 minutes of, an existing booking |
 | GET    | `/api/bookings?email=` | List bookings for an email address |
-| DELETE | `/api/bookings/:id` | Cancel a booking `{ email }` in the body must match the booking's owner |
+| DELETE | `/api/bookings/:id` | Cancel a booking; `{ email }` in the body must match the booking's owner (`404` otherwise, so ids can't be probed). `409` once the session has started |
 
-`POST /api/bookings` is rate-limited (30 requests / 15 min / IP).
+Errors are always JSON `{ "error": "..." }`. `POST /api/bookings` is rate-limited (30 requests /
+15 min / IP); `GET` and `DELETE` on `/api/bookings` share a separate 30 / 15 min / IP limit
+(`429`). The API trusts one proxy hop (`trust proxy = 1`, as on Render) to identify the client IP.
 
 ## Deployment
 
@@ -181,9 +200,23 @@ The app is split across three managed services, same shape as a typical MERN-sty
 **Database:** [Supabase](https://supabase.com) (managed PostgreSQL).
 
 **Backend — Render Web Service:**
-1. New → Web Service → point at the repo, build/start commands `cd backend && npm install` / `cd backend && npm start`
-2. Environment variables: `DATABASE_URL` (Supabase's **connection pooler** string — `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres` — not the direct `db.<project-ref>.supabase.co` host; Render's network can't reach that host's IPv6-only address, which surfaces as `ENETUNREACH` at boot), `CORS_ORIGIN` (the deployed frontend's origin), `PGSSL=true`
-3. `npm start` runs `node migrate.js && node seed.js && node server.js`, so the schema (including the overlap-prevention constraint) is applied and the fields/mentors are upserted on every boot (idempotent — safe to leave permanently; availability itself is computed live, not seeded, so it's always current)
+1. New → Web Service → point at the repo. Build command: `cd backend && npm install`. Start
+   command: `cd backend && npm start`
+2. Environment variables: `DATABASE_URL` (Supabase's **connection pooler** string — `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres` — not the direct `db.<project-ref>.supabase.co` host; Render's network can't reach that host's IPv6-only address, which surfaces as `ENETUNREACH` at boot), `CORS_ORIGIN` (the deployed frontend's origin, e.g. `https://mentorslot.vercel.app`; a trailing slash is stripped, and the server logs a warning in production if it's unset), `PGSSL=true`
+3. `npm start` runs `node migrate.js && node seed.js && node server.js`. This is non-destructive:
+   `migrate.js` applies each pending file in `backend/migrations/` once (tracked in the
+   `schema_migrations` table, each in its own transaction) and never drops anything, and
+   `seed.js` only upserts fields and mentors, so it's safe to leave as the permanent start
+   command (availability itself is computed live, not seeded). Earlier versions ran a
+   `schema.sql` containing `DROP TABLE` on every boot; that file is gone.
+
+*Upgrading the already-deployed database:* keep the same start command. The first boot of this
+version records `001_initial.sql` (a no-op against the existing tables), then applies `002`
+(replaces the overlap constraint with the 15-minute-buffer one) and `003` (CHECK constraints, added
+`NOT VALID` first and validated only if existing rows pass). `002` aborts the deploy with a clear
+message, changing nothing, if two existing bookings for the same mentor are less than 15 minutes
+apart; cancel or move one of each pair and redeploy. Because the failed migration rolls back, the
+previous deploy keeps serving.
 
 **Frontend — Vercel:**
 1. Import the repo → set the project's **Root Directory** to `frontend` (Vercel auto-detects Vite)
@@ -198,8 +231,18 @@ The app is split across three managed services, same shape as a typical MERN-sty
 - There's no notion of mentor-side auth or availability management yet — mentors and their
   working hours are seeded, not editable through the UI. A natural next step is a mentor
   login that lets them set their own weekly availability instead of the fixed 9–5 seed.
-- Email confirmations are not sent (the booking confirmation screen says so plainly) — adding
+- Email confirmations are not sent (the booking confirmation screen says so) — adding
   a transactional email provider on successful booking/cancellation would be the next piece
   of real-world polish.
 - Repo is two independent npm projects (no shared root `package.json`) so each half can be
   deployed and scaled separately.
+
+## Known limits
+
+- **Bookings are identified by email only (demo).** There are no accounts or tokens: anyone who
+  knows an email address can list, and cancel, bookings made under it. That is acceptable for a
+  demo with fictional mentors, not for real use; real use needs proper identity (e.g. emailed
+  magic links or login). Rate limits only slow guessing down.
+- Mentor hours are a fixed 09:00–17:00 UTC weekday grid, not per-mentor or per-timezone.
+- Idle-connection drops are logged and recovered, but there is no request-level retry on a
+  database outage.
