@@ -13,6 +13,7 @@ import {
   initials,
 } from "../utils/dates";
 import { ChevronLeft, Close, Clock, Globe, Alert } from "../components/Icons.jsx";
+import PrivateLink from "../components/PrivateLink.jsx";
 
 const ALL_DURATIONS = [30, 45, 60];
 const DEFAULT_DURATION = 30;
@@ -33,6 +34,9 @@ export default function MentorSlots() {
   const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmedBooking, setConfirmedBooking] = useState(null);
+  // The private manage link, held in memory only for this confirmation screen.
+  const [manageLink, setManageLink] = useState("");
+  const [emailed, setEmailed] = useState(false);
 
   const panelRef = useRef(null);
   // Only the newest slots request may update state: each call aborts the
@@ -88,6 +92,8 @@ export default function MentorSlots() {
     setFormError("");
     setBusy(false);
     setConfirmedBooking(null);
+    setManageLink("");
+    setEmailed(false);
     loadSlots(DEFAULT_DURATION, { first: true });
     const req = request.current;
     return () => {
@@ -147,6 +153,8 @@ export default function MentorSlots() {
       });
       if (currentId.current !== bookingFor) return;
       setConfirmedBooking(res.data.booking);
+      setManageLink(`${window.location.origin}/manage#${res.data.manage_token}`);
+      setEmailed(res.data.emailed === true);
       setSelectedSlot(null);
     } catch (err) {
       if (currentId.current !== bookingFor) return;
@@ -227,17 +235,16 @@ export default function MentorSlots() {
             </div>
             <div className="ticket-notes">
               <p>
-                Booked under <strong className="break-word">{confirmedBooking.mentee_email}</strong>. You can look this session up or cancel it
-                anytime from My bookings using that same email.
+                Booked under <strong className="break-word">{confirmedBooking.mentee_email}</strong>.
               </p>
-              <p className="notice">
-                This is a demo: no confirmation email is sent, so keep this screen's details.
-              </p>
+            </div>
+            <div className="ticket-link">
+              <PrivateLink link={manageLink} emailed={emailed} />
             </div>
           </div>
         </div>
         <div className="ticket-actions">
-          <Link to="/my-bookings" className="btn-primary">View my bookings</Link>
+          <Link to={{ pathname: "/manage", hash: manageLink.split("#")[1] }} className="btn-primary">Manage this booking</Link>
           <Link to="/" className="btn-ghost">Book another mentor</Link>
         </div>
       </div>

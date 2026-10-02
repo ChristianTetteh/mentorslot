@@ -3,7 +3,8 @@ import Header from "./components/Header.jsx";
 import FieldList from "./pages/FieldList.jsx";
 import MentorList from "./pages/MentorList.jsx";
 import MentorSlots from "./pages/MentorSlots.jsx";
-import MyBookings from "./pages/MyBookings.jsx";
+import FindBookings from "./pages/FindBookings.jsx";
+import Manage from "./pages/Manage.jsx";
 
 export default function App() {
   return (
@@ -15,7 +16,8 @@ export default function App() {
           <Route path="/" element={<FieldList />} />
           <Route path="/fields/:fieldId" element={<MentorList />} />
           <Route path="/mentors/:id" element={<MentorSlots />} />
-          <Route path="/my-bookings" element={<MyBookings />} />
+          <Route path="/my-bookings" element={<FindBookings />} />
+          <Route path="/manage" element={<Manage />} />
         </Routes>
       </main>
     </div>

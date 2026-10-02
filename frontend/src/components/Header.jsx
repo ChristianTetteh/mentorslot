@@ -29,7 +29,7 @@ export default function Header() {
         <Link to="/my-bookings" className={location.pathname === "/my-bookings" ? "is-active" : ""}
           aria-current={location.pathname === "/my-bookings" ? "page" : undefined}
         >
-          My bookings
+          Find my bookings
         </Link>
       </nav>
     </header>
