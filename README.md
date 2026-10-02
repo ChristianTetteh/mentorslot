@@ -25,8 +25,9 @@ task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a 
   Engineering & Construction, and more), 32 mentors total, so the app reads like a real
   multi-industry mentorship platform instead of one flat list. All mentor profiles are
   fictional demo data, not real people.
-- **No account needed** — booking only asks for a name and email; "my bookings" are looked
-  up by email, no login/password anywhere
+- **No account needed, private links instead** — booking only asks for a name and email.
+  Each booking gets an unguessable private link to view and cancel it (shown once on the
+  confirmation ticket and emailed); see [Security model](#security-model-private-manage-links)
 - **Cancel + rebook** — cancelling a booking frees the time so someone else (or the same
   person) can take it; a session that has already started can't be cancelled
 - **Real concurrency test, not a mocked one** — a Jest suite fires 5 simultaneous booking
@@ -34,8 +35,8 @@ task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a 
   wins, plus a dedicated test proving a 30-minute booking can't be squeezed into the middle
   of someone else's 60-minute session (see [Testing](#testing))
 - **Rate limiting + security headers** — Helmet, a dedicated rate limit on the booking
-  endpoint to blunt scripted slot-grabbing, and a separate one on the by-email lookup/cancel
-  endpoints
+  endpoint to blunt scripted slot-grabbing, tighter limits on "email me my links", and one on
+  the manage endpoints
 - **Self-seeding demo data** — every boot applies any pending migrations and re-runs an
   idempotent (upsert-only) seed script, so the live demo always has its fields and mentors,
   and fresh future slots across the next two weeks, without manual upkeep or data loss
@@ -160,9 +161,14 @@ Runs every suite that doesn't need a database (the database module is mocked, a 
 clock replaces the real date, and no network is used): `validation.test.js` (input rules,
 including the server-side grid/horizon checks), `schedule.test.js` (grid math), `fields.test.js`
 (the fields routes), `mentors.test.js` (the slots route, duration filtering, buffer padding),
-`bookings.test.js` (create, lookup, atomic cancel), `robustness.test.js` (malformed input, bad
-ids/params, error handling), `ratelimit.test.js` (limits, CORS origin handling) and
-`migrations.test.js` (migration file hygiene).
+`bookings.test.js` (create, manage token and confirmation email, old routes gone),
+`manageToken.test.js` (token forgery cases, MANAGE_SECRET rules), `manage.test.js` (view/cancel,
+409 after start, double cancel), `lookup.test.js` ("email me my links": generic reply, email
+contents, forged Host headers, 503), `mailer.test.js` (Brevo request, timeouts, no key in logs),
+`leaks.test.js` (token never in logs or URLs), `config.test.js` (refuse-to-boot rules),
+`windowLimiter.test.js`, `robustness.test.js` (malformed input incl. non-string tokens/emails, bad
+ids/params, error handling), `ratelimit.test.js` (all limits, path-variant bypass, CORS origin
+handling) and `migrations.test.js` (migration file hygiene).
 
 **Only `tests/concurrency.test.js` needs Postgres** (it is skipped by `npm test`). Point it at
 a scratch database; it applies the migrations itself:
@@ -173,7 +179,8 @@ TEST_DATABASE_URL="postgresql://user:pass@localhost:5432/mentorslot_test" npm ru
 
 It proves the `EXCLUDE` constraint against a real database — 5 simultaneous identical-time
 bookings (exactly 1 wins), overlap across different durations, the 15-minute buffer in both
-orders (through the API and with raw SQL), real cancel behaviour, idempotent migrations and the
+orders (through the API and with raw SQL), real cancel-by-private-link behaviour (including
+simultaneous cancels), idempotent migrations and the
 `CHECK` constraints — a real proof of the guard in
 [Preventing double-booking](#preventing-double-booking), not a mocked stand-in for one.
 
@@ -186,12 +193,17 @@ orders (through the API and with raw SQL), real cancel behaviour, idempotent mig
 | GET    | `/api/mentors` | List all mentors (flat, across every field), each with its `allowed_durations` (not used by this frontend; kept as part of the public API) |
 | GET    | `/api/mentors/:id/slots?duration=&days=` | A mentor + their available future slots for a given session length (`duration` defaults to 30 and must be one the mentor offers; `days` is a whole number 1–30, default 14) |
 | POST   | `/api/bookings` | Book a session `{ mentor_id, start_time, duration, name, email }`. `start_time` is ISO 8601 **with** a timezone offset and must be a slot the slots endpoint offers (`400` otherwise, or if the mentor doesn't offer that duration); `409` if it overlaps, or is within 15 minutes of, an existing booking |
-| GET    | `/api/bookings?email=` | List bookings for an email address |
-| DELETE | `/api/bookings/:id` | Cancel a booking; `{ email }` in the body must match the booking's owner (`404` otherwise, so ids can't be probed). `409` once the session has started |
+| POST   | `/api/bookings/lookup` | `{ email }` — emails that address one message with a private link per upcoming booking. Always the same `200` message whether or not bookings exist; `503` if the server has no email provider; limited to 10/hour/IP and 5/hour/address (the latter silent) |
+| POST   | `/api/manage/view` | `{ token }` — the booking behind a private link (mentor, time, status `upcoming`/`started`/`past`, first name, masked email) |
+| POST   | `/api/manage/cancel` | `{ token }` — cancel with one atomic `DELETE ... RETURNING`; `409` once the session has started; `404` if unknown or already cancelled |
+
+`POST /api/bookings` also returns `manage_token` (once) and `emailed` (`true` only if a mail
+provider is configured). Listing or cancelling by email address no longer exists
+(`GET /api/bookings?email=` and `DELETE /api/bookings/:id` are `404`). Tokens only ever travel in
+POST bodies, never URLs.
 
 Errors are always JSON `{ "error": "..." }`. `POST /api/bookings` is rate-limited (30 requests /
-15 min / IP); `GET` and `DELETE` on `/api/bookings` share a separate 30 / 15 min / IP limit
-(`429`). The API trusts one proxy hop (`trust proxy = 1`, as on Render) to identify the client IP.
+15 min / IP), `/api/bookings/lookup` to 10 / hour / IP, `/api/manage/*` to 60 / 15 min / IP (`429`). The API trusts one proxy hop (`trust proxy = 1`, as on Render) to identify the client IP.
 
 ## Deployment
 
@@ -202,7 +214,15 @@ The app is split across three managed services, same shape as a typical MERN-sty
 **Backend — Render Web Service:**
 1. New → Web Service → point at the repo. Build command: `cd backend && npm install`. Start
    command: `cd backend && npm start`
-2. Environment variables: `DATABASE_URL` (Supabase's **connection pooler** string — `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres` — not the direct `db.<project-ref>.supabase.co` host; Render's network can't reach that host's IPv6-only address, which surfaces as `ENETUNREACH` at boot), `CORS_ORIGIN` (the deployed frontend's origin, e.g. `https://mentorslot.vercel.app`; a trailing slash is stripped, and the server logs a warning in production if it's unset), `PGSSL=true`
+2. Environment variables: `DATABASE_URL` (Supabase's **connection pooler** string — `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres` — not the direct `db.<project-ref>.supabase.co` host; Render's network can't reach that host's IPv6-only address, which surfaces as `ENETUNREACH` at boot), `CORS_ORIGIN` (the deployed frontend's origin, e.g. `https://mentorslot.vercel.app`; a trailing slash is stripped, and the server logs a warning in production if it's unset), `PGSSL=true`, plus the private-link settings below:
+
+   | Variable | Required | Purpose |
+   |---|---|---|
+   | `MANAGE_SECRET` | **yes in production** (boot is refused without it) | Random secret, 32+ characters (`openssl rand -base64 48`). HMAC key for manage links. Changing it invalidates every existing link |
+   | `FRONTEND_ORIGIN` | recommended | Origin used in emailed links, e.g. `https://mentorslot.vercel.app`. Falls back to the first value of `CORS_ORIGIN`. Never read from request headers |
+   | `BREVO_API_KEY` | for email | Brevo API key. Without it no mail is sent (`emailed:false`, "Email me my links" answers `503`) |
+   | `MAIL_FROM` | for email | Sender address, verified in Brevo |
+   | `MAIL_FROM_NAME` | no | Sender name (default `MentorSlot`) |
 3. `npm start` runs `node migrate.js && node seed.js && node server.js`. This is non-destructive:
    `migrate.js` applies each pending file in `backend/migrations/` once (tracked in the
    `schema_migrations` table, each in its own transaction) and never drops anything, and
@@ -222,7 +242,7 @@ previous deploy keeps serving.
 1. Import the repo → set the project's **Root Directory** to `frontend` (Vercel auto-detects Vite)
 2. Environment variable: `VITE_API_URL` = `https://<your-backend>.onrender.com/api`
 3. `frontend/vercel.json` adds the standard SPA rewrite (`/(.*) → /index.html`) so client-side
-   routes like `/my-bookings` work on a direct visit or page refresh, not just when reached by
+   routes like `/manage` and `/my-bookings` work on a direct visit or page refresh, not just when reached by
    clicking through the app — without it, Vercel's static file server 404s on any path it
    doesn't have a literal file for.
 
@@ -231,18 +251,45 @@ previous deploy keeps serving.
 - There's no notion of mentor-side auth or availability management yet — mentors and their
   working hours are seeded, not editable through the UI. A natural next step is a mentor
   login that lets them set their own weekly availability instead of the fixed 9–5 seed.
-- Email confirmations are not sent (the booking confirmation screen says so) — adding
-  a transactional email provider on successful booking/cancellation would be the next piece
-  of real-world polish.
+- Confirmation emails go out through Brevo (see the env table above); cancellation emails, reminders
+  and rescheduling are the natural next pieces.
 - Repo is two independent npm projects (no shared root `package.json`) so each half can be
   deployed and scaled separately.
 
+## Security model (private manage links)
+
+There are no accounts, so access to a booking is a **private link** instead of an email address.
+Knowing someone's email no longer lets you list or cancel their bookings.
+
+- **Token** = `<bookingId>.<mac>`, `mac = base64url(HMAC-SHA256(MANAGE_SECRET, "manage:" + bookingId))`.
+  256 bits, unguessable, nothing stored in the database (it is recomputed on demand), so a leaked
+  database alone cannot cancel anything. Verified with `crypto.timingSafeEqual`; malformed tokens are
+  rejected before any database query; forged, unknown and already-cancelled links all give the same
+  `404 {"error":"Booking not found."}`.
+- **Link** = `FRONTEND_ORIGIN/manage#<token>`. The token is in the URL *fragment*, which browsers never
+  send to servers, so it stays out of access logs and `Referer` headers; the page reads it, then removes
+  it from the address bar. API calls carry it in a POST body only. The link origin comes from
+  configuration, never from the `Host` / `X-Forwarded-Host` headers, so the links in emails can't be
+  poisoned.
+- **Who gets it:** the booker sees it once on the confirmation ticket (copy button) and by email.
+  "Find my bookings" emails the links for an address's upcoming bookings; its reply is identical whether
+  or not the address has bookings and is sent before any lookup, so it can't be used to discover who
+  has booked. Per-address (5/hour, silent) and per-IP (10/hour) limits stop it being used to flood an inbox.
+- **Production safety:** the server refuses to boot without a `MANAGE_SECRET` of 32+ characters (a
+  mis-cased `NODE_ENV` or Render's `RENDER` marker also count as production; the public dev fallback
+  secret is never used there).
+- **Bearer links:** anyone who has a link can cancel that booking (the emails and confirmation say so).
+  There is no way to revoke a single link short of cancelling the booking; rotating `MANAGE_SECRET`
+  revokes all of them.
+- Mail failures never fail a booking; sends happen after the response.
+
 ## Known limits
 
-- **Bookings are identified by email only (demo).** There are no accounts or tokens: anyone who
-  knows an email address can list, and cancel, bookings made under it. That is acceptable for a
-  demo with fictional mentors, not for real use; real use needs proper identity (e.g. emailed
-  magic links or login). Rate limits only slow guessing down.
+- **Private links are bearer credentials** (see above): anyone holding one can view and cancel that
+  booking; there is no per-link revocation and no login. Confirmation emails go to whatever address the
+  booker typed (capped at 5/hour per address), so a stranger can cause a few emails to reach an address,
+  though they only contain a link to the booking that sender made. Rate limits are in memory and per
+  process (fine for one Render instance).
 - Mentor hours are a fixed 09:00–17:00 UTC weekday grid, not per-mentor or per-timezone.
 - Idle-connection drops are logged and recovered, but there is no request-level retry on a
   database outage.
