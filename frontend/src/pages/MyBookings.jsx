@@ -50,8 +50,8 @@ export default function MyBookings() {
     try {
       await api.delete(`/bookings/${bookingId}`, { data: { email: submittedEmail } });
       setBookings((prev) => prev.filter((b) => b.id !== bookingId));
-    } catch {
-      setError("Couldn't cancel that booking. Try again.");
+    } catch (err) {
+      setError(err.response?.data?.error || "Couldn't cancel that booking. Try again.");
     } finally {
       setCancellingId(null);
     }
@@ -76,13 +76,14 @@ export default function MyBookings() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="you@example.com"
+          aria-label="Email you booked with"
         />
         <button className="btn-primary" type="submit">
           Find my bookings
         </button>
       </form>
 
-      {error && <p className="error-banner">{error}</p>}
+      {error && <p className="error-banner" role="alert">{error}</p>}
 
       {bookings && (
         bookings.length === 0 ? (

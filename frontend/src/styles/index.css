@@ -159,6 +159,21 @@ a { color: var(--forest); }
 
 .form-error { color: var(--rose); font-size: var(--fs-sm); margin: 0; }
 
+/* Keyboard focus ring on everything interactive (mouse clicks don't trigger it). */
+:focus-visible {
+  outline: 2px solid var(--forest);
+  outline-offset: 2px;
+}
+.confirm-panel:focus { outline: none; } /* focused programmatically on open; the panel itself isn't a control */
+
+.inline-error {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.inline-error p { margin: 0; }
+
 /* ---------- Hero / mentor list ---------- */
 
 .hero { margin-bottom: var(--sp-6); }
@@ -401,7 +416,6 @@ a { color: var(--forest); }
   padding: 11px 12px;
   font-size: var(--fs-base);
   color: var(--ink);
-  outline: none;
   min-width: 0;
 }
 .confirm-form input:focus { border-color: var(--forest); }
@@ -471,7 +485,6 @@ a { color: var(--forest); }
   border-radius: 8px;
   padding: 11px 12px;
   font-size: var(--fs-base);
-  outline: none;
 }
 .lookup-form input:focus { border-color: var(--forest); }
 

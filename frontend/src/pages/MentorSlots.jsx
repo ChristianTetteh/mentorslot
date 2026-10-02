@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
+import axios from "axios";
 import api from "../api";
 import { groupSlotsByDay, timeRangeLabel, fullDateTimeRangeLabel } from "../utils/dates";
 
@@ -12,7 +13,9 @@ export default function MentorSlots() {
   const [duration, setDuration] = useState(DEFAULT_DURATION);
   const [slots, setSlots] = useState([]);
   const [loadError, setLoadError] = useState("");
+  const [slotsError, setSlotsError] = useState("");
   const [slotsLoading, setSlotsLoading] = useState(true);
+  const [slotNotice, setSlotNotice] = useState("");
   const [activeDay, setActiveDay] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [name, setName] = useState("");
@@ -21,51 +24,93 @@ export default function MentorSlots() {
   const [busy, setBusy] = useState(false);
   const [confirmedBooking, setConfirmedBooking] = useState(null);
 
-  // First load: fetch the mentor (via the default-duration slots call, which
-  // returns both) so we know which durations this mentor actually offers.
-  useEffect(() => {
-    api
-      .get(`/mentors/${id}/slots`, { params: { duration: DEFAULT_DURATION } })
-      .then((res) => {
-        setMentor(res.data.mentor);
-        setDuration(res.data.duration);
-        setSlots(res.data.slots);
-        setSlotsLoading(false);
-      })
-      .catch(() => {
-        setLoadError("Couldn't load this mentor's availability. Try again.");
-        setSlotsLoading(false);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  const panelRef = useRef(null);
+  // Only the newest slots request may update state: each call aborts the
+  // previous one and bumps `seq`, so a slow stale response is ignored.
+  const request = useRef({ seq: 0, controller: null });
+  const currentId = useRef(id);
+  currentId.current = id;
 
-  // Re-fetch whenever the chosen duration changes (after the first load).
+  const loadSlots = useCallback(
+    async (forDuration, { first = false, quiet = false } = {}) => {
+      const req = request.current;
+      req.controller?.abort();
+      const controller = new AbortController();
+      req.controller = controller;
+      const seq = ++req.seq;
+      if (!quiet) setSlotsLoading(true);
+      setSlotsError("");
+      try {
+        const res = await api.get(`/mentors/${id}/slots`, {
+          params: { duration: forDuration },
+          signal: controller.signal,
+        });
+        if (seq !== req.seq) return;
+        if (first) {
+          setMentor(res.data.mentor);
+          setDuration(res.data.duration);
+        }
+        setSlots(res.data.slots);
+      } catch (err) {
+        if (seq !== req.seq || axios.isCancel(err)) return;
+        if (first) setLoadError("Couldn't load this mentor's availability.");
+        else setSlotsError("Couldn't load availability for that session length.");
+      }
+      if (seq === req.seq) setSlotsLoading(false);
+    },
+    [id]
+  );
+
+  // Load on mount and whenever the route's mentor id changes (the component
+  // stays mounted when navigating mentor -> mentor, so reset everything).
+  // The first call fetches the mentor via the default-duration slots request,
+  // which returns both, so we know which durations this mentor offers.
+  useEffect(() => {
+    setMentor(null);
+    setDuration(DEFAULT_DURATION);
+    setSlots([]);
+    setLoadError("");
+    setSlotsError("");
+    setSlotNotice("");
+    setSlotsLoading(true);
+    setActiveDay(null);
+    setSelectedSlot(null);
+    setFormError("");
+    setBusy(false);
+    setConfirmedBooking(null);
+    loadSlots(DEFAULT_DURATION, { first: true });
+    const req = request.current;
+    return () => {
+      req.seq++;
+      req.controller?.abort();
+    };
+  }, [id, loadSlots]);
+
+  // Move focus into the confirm panel when it opens so keyboard and
+  // screen-reader users land on the form they just asked for.
+  useEffect(() => {
+    if (selectedSlot) panelRef.current?.focus();
+  }, [selectedSlot]);
+
   function changeDuration(nextDuration) {
     if (nextDuration === duration) return;
     setDuration(nextDuration);
-    setSlotsLoading(true);
     setSelectedSlot(null);
     setActiveDay(null);
-    api
-      .get(`/mentors/${id}/slots`, { params: { duration: nextDuration } })
-      .then((res) => {
-        setSlots(res.data.slots);
-        setSlotsLoading(false);
-      })
-      .catch(() => {
-        setLoadError("Couldn't load availability for that session length. Try again.");
-        setSlotsLoading(false);
-      });
+    setSlotNotice("");
+    setSlots([]);
+    loadSlots(nextDuration);
   }
 
   const days = groupSlotsByDay(slots);
-  const currentDayKey = activeDay || days[0]?.key;
+  const currentDayKey = days.some((d) => d.key === activeDay) ? activeDay : days[0]?.key;
   const currentDay = days.find((d) => d.key === currentDayKey);
   const offeredDurations = mentor?.allowed_durations || ALL_DURATIONS;
 
   function pickSlot(slot) {
     setSelectedSlot(slot);
     setFormError("");
+    setSlotNotice("");
   }
 
   async function confirmBooking(e) {
@@ -79,33 +124,51 @@ export default function MentorSlots() {
       setFormError("Enter a valid email.");
       return;
     }
+    const bookingFor = id;
+    const slot = selectedSlot;
     setBusy(true);
     try {
       const res = await api.post("/bookings", {
         mentor_id: mentor.id,
-        start_time: selectedSlot.start_time,
+        start_time: slot.start_time,
         duration,
         name,
         email,
       });
+      if (currentId.current !== bookingFor) return;
       setConfirmedBooking(res.data.booking);
-      setSlots((prev) => prev.filter((s) => s.start_time !== selectedSlot.start_time));
       setSelectedSlot(null);
     } catch (err) {
+      if (currentId.current !== bookingFor) return;
       const message = err.response?.data?.error || "Couldn't complete the booking. Try again.";
-      setFormError(message);
       if (err.response?.status === 409) {
-        // Someone else took an overlapping time first — drop it from the list so it can't be retried.
-        setSlots((prev) => prev.filter((s) => s.start_time !== selectedSlot.start_time));
+        // Someone else took an overlapping (or too-close) time first. Close the
+        // form, say so where the list is, and refresh the whole list: other
+        // nearby times may have gone too.
         setSelectedSlot(null);
+        setSlotNotice(`${message} The list below has been refreshed.`);
+        loadSlots(duration, { quiet: true });
+      } else {
+        setFormError(message);
       }
     } finally {
-      setBusy(false);
+      if (currentId.current === bookingFor) setBusy(false);
     }
   }
 
-  if (loadError) return <div className="page"><p className="error-banner">{loadError}</p></div>;
-  if (!mentor) return <div className="page"><p className="muted">Loading…</p></div>;
+  if (loadError) {
+    return (
+      <div className="page">
+        <div className="error-banner inline-error" role="alert">
+          <p>{loadError}</p>
+          <button className="btn-ghost" onClick={() => { setLoadError(""); loadSlots(DEFAULT_DURATION, { first: true }); }}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (!mentor) return <div className="page"><p className="muted" role="status">Loading…</p></div>;
 
   if (confirmedBooking) {
     return (
@@ -121,6 +184,9 @@ export default function MentorSlots() {
             Booked under {confirmedBooking.mentee_email}. You can look this session up or cancel it
             anytime from My bookings using that same email.
           </p>
+          <p className="stamp-ticket-note">
+            This is a demo: no confirmation email is sent, so keep this screen's details.
+          </p>
           <div className="stamp-ticket-actions">
             <Link to="/my-bookings" className="btn-primary">View my bookings</Link>
             <Link to="/" className="btn-ghost">Book another mentor</Link>
@@ -132,20 +198,25 @@ export default function MentorSlots() {
 
   return (
     <div className="page">
-      <Link to={`/fields/${mentor.field_id}`} className="back-link">← Back to mentors</Link>
+      {mentor.field_id ? (
+        <Link to={`/fields/${mentor.field_id}`} className="back-link">← Back to mentors</Link>
+      ) : (
+        <Link to="/" className="back-link">← Back to fields</Link>
+      )}
 
       <section className="mentor-header" style={{ "--mentor-color": mentor.color }}>
         <h1>{mentor.name}</h1>
         <p className="mentor-header-title">{mentor.title}</p>
       </section>
 
-      <div className="duration-picker">
+      <div className="duration-picker" role="group" aria-label="Session length">
         {ALL_DURATIONS.map((d) => {
           const offered = offeredDurations.includes(d);
           return (
             <button
               key={d}
               className={`duration-pill ${d === duration ? "is-active" : ""}`}
+              aria-pressed={d === duration}
               onClick={() => offered && changeDuration(d)}
               disabled={!offered}
               title={offered ? undefined : `${mentor.name} doesn't offer ${d}-minute sessions`}
@@ -156,17 +227,25 @@ export default function MentorSlots() {
         })}
       </div>
 
-      {slotsLoading ? (
-        <p className="muted">Loading availability…</p>
+      {slotNotice && <p className="error-banner" role="alert">{slotNotice}</p>}
+
+      {slotsError ? (
+        <div className="error-banner inline-error" role="alert">
+          <p>{slotsError}</p>
+          <button className="btn-ghost" onClick={() => loadSlots(duration)}>Retry</button>
+        </div>
+      ) : slotsLoading ? (
+        <p className="muted" role="status">Loading availability…</p>
       ) : days.length === 0 ? (
         <p className="muted">No open times right now for a {duration}-minute session. Check back soon or try a different length.</p>
       ) : (
         <>
-          <div className="day-tabs">
+          <div className="day-tabs" role="group" aria-label="Day">
             {days.map((d) => (
               <button
                 key={d.key}
                 className={`day-tab ${d.key === currentDayKey ? "is-active" : ""}`}
+                aria-pressed={d.key === currentDayKey}
                 onClick={() => {
                   setActiveDay(d.key);
                   setSelectedSlot(null);
@@ -182,7 +261,11 @@ export default function MentorSlots() {
               <li key={slot.start_time} className="ledger-row">
                 <span className="ledger-time">{timeRangeLabel(slot.start_time, slot.end_time)}</span>
                 <span className="ledger-rule" aria-hidden="true" />
-                <button className="ledger-book-btn" onClick={() => pickSlot(slot)}>
+                <button
+                  className="ledger-book-btn"
+                  aria-label={`Book ${currentDay.label}, ${timeRangeLabel(slot.start_time, slot.end_time)}`}
+                  onClick={() => pickSlot(slot)}
+                >
                   Book
                 </button>
               </li>
@@ -192,7 +275,7 @@ export default function MentorSlots() {
       )}
 
       {selectedSlot && (
-        <div className="confirm-panel">
+        <div className="confirm-panel" ref={panelRef} tabIndex={-1} role="region" aria-label="Confirm your booking">
           <button className="confirm-panel-close" onClick={() => setSelectedSlot(null)} aria-label="Change time">
             ×
           </button>
@@ -212,7 +295,7 @@ export default function MentorSlots() {
                 placeholder="you@example.com"
               />
             </label>
-            {formError && <p className="form-error">{formError}</p>}
+            {formError && <p className="form-error" role="alert">{formError}</p>}
             <button className="btn-primary" type="submit" disabled={busy}>
               {busy ? "Booking…" : "Confirm booking"}
             </button>
