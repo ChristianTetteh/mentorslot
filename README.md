@@ -1,4 +1,5 @@
 # MentorSlot — book time with a mentor.
+**Built by Christian Tetteh a full stack developer intern at Career Ghana**
 
 A full-stack booking/scheduling app built for the "Simple Booking/Scheduling App" intern
 task: **React + Node/Express + PostgreSQL**, deployed, tested, and built with a genuine
